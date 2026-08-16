@@ -65,9 +65,14 @@ if (existsSync(lib)) {
   }
 }
 
-// 4. dependency link
+// 4. dependency link (local dev only; CI has no DSH runtime installed)
+const isCI = !!process.env.CI
 const depLink = join(root, 'node_modules', '@deepseek-ai', 'dsh-tools')
-check('dsh-tools link exists', existsSync(depLink), depLink)
+if (isCI) {
+  console.log('SKIP  dsh-tools link (CI)')
+} else {
+  check('dsh-tools link exists', existsSync(depLink), depLink)
+}
 
 // 5. bundle manifest
 const patch = join(root, 'cordis.patch.yml')
