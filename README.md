@@ -15,11 +15,12 @@ Cheat Engine bridge toolkit：让 DSH Agent 通过 `ce_*` 工具调用 Cheat Eng
 - CE 端桥接基于 [HollyZoe/cheatengine-mcp-tcp-bridge](https://github.com/HollyZoe/cheatengine-mcp-tcp-bridge)（`ce_mcp_bridge.lua` + 原生 TCP DLL）。
 - DSH 端插件是纯 Node.js TCP client，不依赖 Python MCP Server，直接说 CE bridge 的 JSON-RPC 协议。
 
-## 工具列表（29 个）
+## 工具列表（30 个，默认常驻 3 个）
 
 | 类别 | 工具 |
 |---|---|
-| 连接/状态 | `ce_status`, `ce_connect` |
+| 连接/状态（常驻） | `ce_status`, `ce_connect` |
+| 按需解锁（常驻） | `ce_tool_search` |
 | 进程/模块 | `ce_list_processes`, `ce_attach`, `ce_process_info`, `ce_enum_modules` |
 | 扫描/搜索 | `ce_scan`, `ce_next_scan`, `ce_get_scan_results`, `ce_aob_scan`, `ce_search_string` |
 | 内存读取 | `ce_read_memory`, `ce_read_integer`, `ce_read_string`, `ce_read_pointer_chain` |
@@ -27,6 +28,15 @@ Cheat Engine bridge toolkit：让 DSH Agent 通过 `ce_*` 工具调用 Cheat Eng
 | 反汇编/分析 | `ce_disassemble`, `ce_get_instruction_info` |
 | 断点/调试（危险） | `ce_set_breakpoint`, `ce_set_data_breakpoint`, `ce_list_breakpoints`, `ce_remove_breakpoint`, `ce_get_breakpoint_hits`, `ce_clear_breakpoints`, `ce_get_registers` |
 | 高级脚本（危险） | `ce_execute_lua`, `ce_auto_assemble` |
+
+## 工具暴露策略（渐进披露）
+
+为避免 30 个工具一次性进入模型上下文导致 token 开销和注意力分散，插件采用 DSH 官方 `anchored-standard` 推荐的**按需解锁**模式：
+
+- 默认模型只看到 `ce_status`、`ce_connect`、`ce_tool_search` 三个常驻工具。
+- Agent 需要其他能力时，先调用 `ce_tool_search({"query": "scan"})` 搜索完整目录，再调用 `ce_tool_search({"toolNames": ["ce_scan"]})` 解锁。
+- 解锁记录来自持久化的 `tool/call` 事件，**从下一个请求开始生效**，并在会话内保持。
+- 危险工具（写内存/断点/脚本）默认不可见，必须显式解锁，降低误操作风险。
 
 ## 部署
 
@@ -42,7 +52,7 @@ Cheat Engine bridge toolkit：让 DSH Agent 通过 `ce_*` 工具调用 Cheat Eng
 
 ### 2. DSH 端
 
-已注入当前环境后，插件会注册 `ce_*` 工具。默认连接 `127.0.0.1:17171`，可通过插件配置或 `ce_connect` 覆盖。
+已注入当前环境后，插件会注册全部 `ce_*` 工具，但默认只向 Agent 暴露 `ce_status`、`ce_connect`、`ce_tool_search`。默认连接 `127.0.0.1:17171`，可通过插件配置或 `ce_connect` 覆盖。
 
 ## 安全提示
 

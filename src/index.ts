@@ -5,6 +5,13 @@
  * for the Cheat Engine MCP Bridge (ce_mcp_bridge.lua + ce_mcp_tcp DLL):
  *   https://github.com/HollyZoe/cheatengine-mcp-tcp-bridge
  *
+ * Tool exposure policy (progressive disclosure, mirrors DSH anchored-standard):
+ *   - Only ce_status / ce_connect / ce_tool_search are always visible.
+ *   - All other ce_* tools are registered but hidden from the model catalog
+ *     until the agent unlocks them via ce_tool_search({"toolNames": [...]}).
+ *   - Unlocked names are derived from durable tool/call events, so the
+ *     unlocked set survives resume/reload within the session.
+ *
  * Deployment (one-time, on the Windows machine running Cheat Engine):
  *   1. Copy ce_mcp_tcp_x64.dll (or x86) into the Cheat Engine directory.
  *   2. Open Cheat Engine, attach to the target process.
@@ -37,6 +44,9 @@ const DEFAULTS: Config = {
   timeoutMs: 90000,
 }
 
+/** Always-visible tools: connection status + on-demand discovery. */
+const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search'])
+
 interface ToolDef {
   name: string
   description: string
@@ -44,38 +54,12 @@ interface ToolDef {
   method: string
   mapParams?: (args: any) => Record<string, any>
   dangerous?: boolean
+  kind?: 'search'
 }
 
-function buildTool(client: CEClient, def: ToolDef) {
-  const description = def.dangerous
-    ? `[危险操作-改内存/调试] ${def.description}`
-    : def.description
-  return defineTool({
-    name: def.name,
-    description,
-    parameters: def.parameters || {},
-    output: {
-      schema: { type: 'object', additionalProperties: true },
-      render: (_args: unknown, value: any) => [
-        { type: 'text', text: JSON.stringify(value, null, 2) },
-      ],
-    },
-    async execute(args: any) {
-      try {
-        const params = def.mapParams ? def.mapParams(args) : args
-        return await client.sendCommand(def.method, params)
-      } catch (err: any) {
-        return {
-          success: false,
-          error: String((err && err.message) || err),
-        }
-      }
-    },
-  })
-}
-
-function registerTools(ctx: Context, client: CEClient): Array<() => void> {
-  const defs: ToolDef[] = [
+/** Tool definitions. `dangerous` tools are hidden until explicitly unlocked. */
+function createToolDefs(client: CEClient): ToolDef[] {
+  return [
     // ── 连接 / 状态 ────────────────────────────────────────────────
     {
       name: 'ce_status',
@@ -364,9 +348,145 @@ function registerTools(ctx: Context, client: CEClient): Array<() => void> {
         script: { type: 'string', required: true, description: 'AA 脚本' },
       },
     },
-  ]
 
-  return defs.map((def) => ctx.tools.register(buildTool(client, def)))
+    // ── 按需解锁（常驻） ──────────────────────────────────────────
+    {
+      name: 'ce_tool_search',
+      description: [
+        '搜索并解锁当前不可见的 ce_* 工具。',
+        '本会话默认只暴露 ce_status、ce_connect。需要其他 Cheat Engine 工具时，先调用本工具搜索，再用 toolNames 精确解锁。',
+        '危险工具（写内存/断点/脚本）解锁后请谨慎使用。',
+      ].join(' '),
+      kind: 'search',
+      method: 'ce_tool_search',
+      parameters: {
+        query: { type: 'string', description: '搜索关键词，如 "scan"、"read"、"breakpoint"' },
+        toolNames: { type: 'array', items: { type: 'string' }, description: '要解锁的精确工具名数组，如 ["ce_scan"]' },
+      },
+    },
+  ]
+}
+
+function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
+  const description = def.dangerous
+    ? `[危险操作-改内存/调试] ${def.description}`
+    : def.description
+
+  if (def.kind === 'search') {
+    return defineTool({
+      name: def.name,
+      description,
+      parameters: def.parameters || {},
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args: unknown, value: any) => [
+          { type: 'text', text: value.text || JSON.stringify(value, null, 2) },
+        ],
+      },
+      async execute(args: any, exec: any) {
+        const query = typeof args.query === 'string' ? args.query.trim() : ''
+        const unlock = Array.isArray(args.toolNames)
+          ? args.toolNames.filter((name: unknown) => typeof name === 'string' && name.length > 0)
+          : []
+        const lines: string[] = []
+        let schemas: any[] = []
+        try {
+          schemas = ctx.tools.schemas(exec?.agent) || []
+        } catch (err: any) {
+          lines.push(`目录搜索不可用：${String((err && err.message) || err)}`)
+        }
+        const ceSchemas = schemas.filter((schema) => schema.name.startsWith('ce_'))
+
+        if (unlock.length > 0) {
+          const valid = ceSchemas.filter((schema) => unlock.includes(schema.name))
+          const invalid = unlock.filter((name: string) => !ceSchemas.some((schema) => schema.name === name))
+          lines.push(`将在下一请求解锁：${valid.map((schema) => schema.name).join(', ') || '(无)'}`)
+          if (invalid.length > 0) lines.push(`未找到：${invalid.join(', ')}`)
+          const dangerous = valid.filter((schema) => (schema.description || '').startsWith('[危险操作'))
+          if (dangerous.length > 0) {
+            lines.push(`注意：以下为危险工具，请谨慎使用：${dangerous.map((schema) => schema.name).join(', ')}`)
+          }
+        }
+
+        if (query.length > 0) {
+          const tokens = query.toLowerCase().split(/[^a-z0-9_]+/).filter(Boolean)
+          const matches = ceSchemas
+            .filter((schema) => {
+              const haystack = `${schema.name} ${schema.description || ''}`.toLowerCase()
+              return tokens.every((token) => haystack.includes(token))
+            })
+            .slice(0, 25)
+          lines.push(`匹配工具（${matches.length}）：`)
+          for (const schema of matches) {
+            const desc = (schema.description || '').split('\n')[0].slice(0, 80)
+            lines.push(`- ${schema.name}: ${desc}${(schema.description || '').startsWith('[危险操作') ? ' [危险]' : ''}`)
+          }
+          lines.push('解锁：ce_tool_search({"toolNames": ["<精确名称>"]})')
+        }
+
+        if (query.length === 0 && unlock.length === 0) {
+          lines.push('当前常驻：ce_status、ce_connect。需要其他 ce_* 工具时，用 query 搜索，再用 toolNames 解锁。')
+          lines.push('危险工具（写内存/断点/脚本）需显式解锁。')
+        }
+
+        return { text: lines.join('\n'), unlocked: unlock }
+      },
+    })
+  }
+
+  return defineTool({
+    name: def.name,
+    description,
+    parameters: def.parameters || {},
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args: unknown, value: any) => [
+        { type: 'text', text: JSON.stringify(value, null, 2) },
+      ],
+    },
+    async execute(args: any) {
+      try {
+        const params = def.mapParams ? def.mapParams(args) : args
+        return await client.sendCommand(def.method, params)
+      } catch (err: any) {
+        return {
+          success: false,
+          error: String((err && err.message) || err),
+        }
+      }
+    },
+  })
+}
+
+function registerTools(ctx: Context, client: CEClient): Array<() => void> {
+  return createToolDefs(client).map((def) => ctx.tools.register(buildTool(ctx, client, def)))
+}
+
+/**
+ * Derive the session's unlocked ce_* tools from durable tool/call events.
+ * Matches the official anchored-standard pattern: the agent calls
+ * ce_tool_search with toolNames, and the tool/call event persists the
+ * unlock request for resume/reload.
+ */
+function unlockedFromEvents(session: any): Set<string> {
+  const unlocked = new Set<string>()
+  if (!session || !Array.isArray(session.events)) return unlocked
+  for (const event of session.events) {
+    if (event.type !== 'tool/call') continue
+    if (event.data?.name !== 'ce_tool_search') continue
+    let args: any
+    try {
+      args = JSON.parse(event.data.arguments)
+    } catch {
+      continue
+    }
+    if (args && typeof args === 'object' && !Array.isArray(args) && Array.isArray(args.toolNames)) {
+      for (const name of args.toolNames) {
+        if (typeof name === 'string' && name.length > 0) unlocked.add(name)
+      }
+    }
+  }
+  return unlocked
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -379,9 +499,32 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => {
     const cleanups = registerTools(ctx, client)
+
+    // Progressive disclosure: keep only resident + unlocked ce_* tools in the
+    // model-facing catalog. Non-ce tools are untouched.
+    const disposeFilter = ctx.on('system-prompt/assemble', async (_assembly: any, context: any, next: () => Promise<any>) => {
+      const assembled = await next()
+      try {
+        if (!assembled || !Array.isArray(assembled.tools)) return assembled
+        const unlocked = unlockedFromEvents(context?.agent?.session)
+        const keep = new Set([...RESIDENT_TOOLS, ...unlocked])
+        return {
+          ...assembled,
+          tools: assembled.tools.filter((tool: any) => !tool.name.startsWith('ce_') || keep.has(tool.name)),
+        }
+      } catch (err: any) {
+        // A filter bug must never break a session: fall back to full catalog.
+        try {
+          ctx.logger.warn(`dsh-cheatengine: assemble filter failed, exposing full ce_* catalog: ${String((err && err.message) || err)}`)
+        } catch { /* ignore */ }
+        return assembled
+      }
+    })
+
     return () => {
+      disposeFilter()
       for (const dispose of cleanups) dispose()
       client.close()
     }
-  }, '@dsh-external/dsh-cheatengine: tools')
+  }, '@dsh-external/dsh-cheatengine: tools + progressive disclosure')
 }
