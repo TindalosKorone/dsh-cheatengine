@@ -2,6 +2,12 @@
 
 A DeepSeek Harness (DSH) plugin that lets agents drive Cheat Engine through `ce_*` tools: process attach, memory scan/read/write, disassembly, breakpoints, registers, pointer analysis, Lua/AA scripts, and more.
 
+## Features
+
+- CE dynamic debugging: process attach, memory scan/read/write, disassembly, breakpoints, registers, AOB
+- Game debugging enhancements: anti-cheat detection, module dump, AOB generation, speedhack, cheat table save/load
+- Engineering: session stats, hypothesis tracking, evidence records, audit/undo, snapshot, risk levels
+
 ## Install
 
 ### CE side (Windows)

@@ -38,6 +38,12 @@ const requiredTools = [
   'ce_snapshot_save',
   'ce_snapshot_load',
   'ce_risk_levels',
+  'ce_cheat_table_save',
+  'ce_cheat_table_load',
+  'ce_speedhack',
+  'ce_dump_module',
+  'ce_aob_generate',
+  'ce_detect_protection',
   'install_ce_bridge',
 ]
 

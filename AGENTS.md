@@ -23,6 +23,7 @@
 - 反汇编：`ce_disassemble`, `ce_get_instruction_info`
 - 断点/调试：`ce_set_breakpoint`, `ce_set_data_breakpoint`, `ce_list_breakpoints`, `ce_remove_breakpoint`, `ce_get_breakpoint_hits`, `ce_clear_breakpoints`, `ce_get_registers`, `ce_find_what_writes`
 - 锁定/冻结：`ce_lock_address`, `ce_unlock_address`, `ce_write_many`
+- 游戏调试增强：`ce_detect_protection`, `ce_dump_module`, `ce_aob_generate`, `ce_speedhack`, `ce_cheat_table_save`, `ce_cheat_table_load`
 - 工程化：`ce_session_stats`, `ce_budget_status`, `ce_cache_status`, `ce_forget`, `ce_hypothesis`, `ce_evidence`, `ce_playbook`, `ce_audit_log`, `ce_undo_last`, `ce_snapshot_save`, `ce_snapshot_load`, `ce_risk_levels`
 - 危险（解锁前三思）：`ce_write_integer`, `ce_write_memory`, `ce_write_string`, `ce_execute_lua`, `ce_auto_assemble`, `install_ce_bridge`
 
