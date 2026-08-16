@@ -1,0 +1,6 @@
+# DSH bundle profile patch.
+# Makes the plugin installable AND active via:
+#   dsh plugin add github:TindalosKorone/dsh-cheatengine
+- insert:
+    - id: '@dsh-external/dsh-cheatengine'
+      name: '@dsh-external/dsh-cheatengine'
