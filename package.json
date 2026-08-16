@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-cheatengine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cheat Engine bridge toolkit: expose ce_* dynamic debugging tools to DSH agent via CE Lua TCP bridge",
   "private": true,
   "type": "module",
@@ -21,7 +21,7 @@
     "typescript": "^5.9.0"
   },
   "scripts": {
-    "build": "bash scripts/build.sh",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

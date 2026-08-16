@@ -62,9 +62,11 @@ Cheat Engine bridge toolkit：让 DSH Agent 通过 `ce_*` 工具调用 Cheat Eng
 
 ## 开发与构建
 
-当前 `lib/` 是可直接运行的 JS 产物（本环境无 DSH checkout/tsc 时的手写构建）。源码在 `src/`（TypeScript）。
+插件核心（`lib/`、`src/`）是纯 Node.js 实现，**不依赖 bash/pwsh**，在 Linux/macOS/Windows 上运行一致。只有“构建/链接依赖”环节涉及平台差异，见下方说明。
 
-在有 DSH checkout 的环境中：
+当前 `lib/` 是可直接运行的 JS 产物，仓库已包含它，PC 端 clone 后无需构建即可注入。
+
+### 有 DSH checkout 的环境（容器/Linux）
 
 ```bash
 DSH_CHECKOUT=/path/to/dsh-harness bash scripts/build.sh
@@ -73,16 +75,40 @@ dev_build_plugin {"dir": "/root/dsh-cheatengine"}
 dev_inject_plugin {"dir": "/root/dsh-cheatengine"}
 ```
 
-在没有 DSH checkout 的环境中，`build.sh` 会自动检测到 `lib/` 已存在并跳过编译，`dev_build_plugin` 仍可完成打包：
+### Windows / PowerShell 环境
 
-```bash
-dev_build_plugin {"dir": "/root/dsh-cheatengine"}
-# 产物：dsh-external-dsh-cheatengine-0.0.1.tgz
+如果 PC 上没有 bash（只有 PowerShell），用跨平台 Node 构建脚本代替 `build.sh`：
+
+```powershell
+$env:DSH_CHECKOUT="C:\path\to\dsh-harness"
+npm run build
+# 或直接：
+node scripts/build.mjs
 ```
 
-插件运行时依赖 `@deepseek-ai/dsh-tools`，在无 checkout 环境需手动链接：
+没有 DSH checkout 时，`build.mjs` 会检测到 `lib/` 已存在并跳过编译；`npm run build` 仍可完成打包：
+
+```powershell
+npm run build
+# 产物：dsh-external-dsh-cheatengine-<version>.tgz
+```
+
+> `dev_build_plugin` 内部固定调用 `bash scripts/build.sh`，所以在无 bash 的 Windows 上请直接使用 `npm run build`，然后手动 `dev_inject_plugin` 指向本目录。
+
+### 手动链接 `@deepseek-ai/dsh-tools`（仅在无 checkout 且运行时缺依赖时需要）
+
+Linux/macOS：
 
 ```bash
 mkdir -p node_modules/@deepseek-ai
 ln -s /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools node_modules/@deepseek-ai/dsh-tools
 ```
+
+Windows PowerShell：
+
+```powershell
+New-Item -ItemType Directory -Force -Path node_modules\@deepseek-ai | Out-Null
+New-Item -ItemType Junction -Path node_modules\@deepseek-ai\dsh-tools -Target C:\path\to\dsh\installation\node_modules\@deepseek-ai\dsh-tools
+```
+
+（把 `C:\path\to\dsh\installation` 换成你机器上 DSH 的实际安装路径。）
