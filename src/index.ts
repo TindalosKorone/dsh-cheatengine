@@ -904,10 +904,19 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const src = path.join(sourceDir, f)
           const dst = path.join(ceDir, f)
           try {
+            await fs.access(src)
+          } catch {
+            return { success: false, error: `source file not found: ${src}`, copied, error_class: 'SOURCE_FILE_NOT_FOUND' }
+          }
+          try {
             await fs.copyFile(src, dst)
             copied.push(dst)
           } catch (err: any) {
-            return { success: false, error: `copy ${f} failed: ${String((err && err.message) || err)}`, copied }
+            const code = (err && err.code) || ''
+            const hint = code === 'EACCES' || code === 'EPERM'
+              ? 'permission denied — try running DSH/CE as administrator'
+              : String((err && err.message) || err)
+            return { success: false, error: `copy ${f} failed: ${hint}`, copied, error_class: code === 'EACCES' || code === 'EPERM' ? 'PERMISSION_DENIED' : 'COPY_FAILED' }
           }
         }
         if (writeAutorun) {
@@ -1000,12 +1009,12 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       parameters: {
         addresses: { type: 'array', items: { type: 'string' }, required: true, description: '地址数组，如 ["0x1000","0x2000"]' },
         type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
-        max_results: { type: 'integer', description: '最多返回条数，默认 100' },
+        max_results: { type: 'integer', description: '最多返回条数，默认 50，最大 200' },
       },
       async execute(args: any, client: any) {
         let addresses = Array.isArray(args.addresses) ? args.addresses.map(String) : []
         if (addresses.length === 0) return { success: false, error: 'addresses is required', error_class: 'INVALID_ARGS' }
-        const maxResults = Math.min(Number(args.max_results) || 100, 1000)
+        const maxResults = Math.min(Number(args.max_results) || 50, 200)
         const truncated = addresses.length > maxResults
         addresses = addresses.slice(0, maxResults)
         const type = args.type || 'dword'
@@ -1026,7 +1035,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         addresses: { type: 'array', items: { type: 'string' }, required: true, description: '地址数组' },
         values: { type: 'array', items: { type: 'number' }, required: true, description: '值数组，与 addresses 一一对应' },
         type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
-        max_results: { type: 'integer', description: '最多处理/返回条数，默认 100' },
+        max_results: { type: 'integer', description: '最多处理/返回条数，默认 50，最大 200' },
       },
       async execute(args: any, client: any) {
         let addresses = Array.isArray(args.addresses) ? args.addresses.map(String) : []
@@ -1034,7 +1043,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         if (addresses.length === 0 || addresses.length !== values.length) {
           return { success: false, error: 'addresses and values must be non-empty arrays of same length', error_class: 'INVALID_ARGS' }
         }
-        const maxResults = Math.min(Number(args.max_results) || 100, 1000)
+        const maxResults = Math.min(Number(args.max_results) || 50, 200)
         const truncated = addresses.length > maxResults
         addresses = addresses.slice(0, maxResults)
         const type = args.type || 'dword'
@@ -1607,7 +1616,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         base: { type: 'string', description: '基址（pointer_chain 使用）' },
         offsets: { type: 'array', items: { type: 'string' }, description: '偏移数组（pointer_chain 使用）' },
         addresses: { type: 'array', items: { type: 'string' }, description: '地址数组（many 使用）' },
-        max_results: { type: 'integer', description: '最多返回条数（many 使用，默认 100，最大 1000）' },
+        max_results: { type: 'integer', description: '最多返回条数（many 使用，默认 50，最大 200）' },
       },
       async execute(args: any, client: any) {
         const mode = args.mode || 'integer'
@@ -1623,7 +1632,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         if (mode === 'many') {
           const addresses = Array.isArray(args.addresses) ? args.addresses.map(String) : []
           if (addresses.length === 0) return { success: false, error: 'addresses is required', error_class: 'INVALID_ARGS' }
-          const maxResults = Math.min(Number(args.max_results) || 100, 1000)
+          const maxResults = Math.min(Number(args.max_results) || 50, 200)
           const results: any[] = []
           for (const address of addresses.slice(0, maxResults)) {
             const res = await client.sendCommand('read_integer', { address, type: args.type || 'dword' })
@@ -1649,7 +1658,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         wide: { type: 'boolean', description: '是否宽字符 UTF-16（string 使用，默认 false）' },
         addresses: { type: 'array', items: { type: 'string' }, description: '地址数组（many 使用）' },
         values: { type: 'array', items: { type: 'number' }, description: '值数组（many 使用）' },
-        max_results: { type: 'integer', description: '最多处理/返回条数（many 使用，默认 100，最大 1000）' },
+        max_results: { type: 'integer', description: '最多处理/返回条数（many 使用，默认 50，最大 200）' },
       },
       async execute(args: any, client: any) {
         const mode = args.mode || 'integer'
@@ -1691,7 +1700,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           if (addresses.length === 0 || addresses.length !== values.length) {
             return { success: false, error: 'addresses and values must be non-empty arrays of same length', error_class: 'INVALID_ARGS' }
           }
-          const maxResults = Math.min(Number(args.max_results) || 100, 1000)
+          const maxResults = Math.min(Number(args.max_results) || 50, 200)
           const truncated = addresses.length > maxResults
           addresses = addresses.slice(0, maxResults)
           const type = args.type || 'dword'
