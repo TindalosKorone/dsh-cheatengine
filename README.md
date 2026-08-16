@@ -1,4 +1,4 @@
-# @dsh-external/dsh-cheatengine
+# @tindalosko/dsh-cheatengine
 
 [English](README.en.md) | **简体中文**
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Cross-platform host build for @dsh-external/dsh-cheatengine.
+ * Cross-platform host build for @tindalosko/dsh-cheatengine.
  *
  * Compiles src/ → lib/ using TypeScript. Resolves tsc from, in order:
  *   1. DSH_CHECKOUT/node_modules/.bin/tsc
