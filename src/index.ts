@@ -22,7 +22,7 @@ import type { Context } from 'cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from 'schemastery'
 import { CEClient } from './ce-client.js'
-import { updateSession, pushAudit, pushEvidence } from './session.js'
+import { updateSession, pushAudit, pushEvidence, type SessionState } from './session.js'
 import { cePlaybookProvider } from './playbook.js'
 import { buildStats, renderStatusHtml } from './web.js'
 import { session, getSession, setSession } from './state.js'
@@ -77,7 +77,7 @@ function withErrorClass(result: any, error?: any): any {
   return result
 }
 
-function recordAutoEvidence(toolName: string, args: any, result: any): void {
+function recordAutoEvidence(s: SessionState, toolName: string, args: any, result: any): void {
   if (!result || result.success === false) return
   let entry: any = null
   if (toolName === 'ce_scan') {
@@ -100,10 +100,9 @@ function recordAutoEvidence(toolName: string, args: any, result: any): void {
     entry = { claim: 'protection scan', method: 'ce_detect_protection', result: `risk=${result.risk}`, tags: ['protection'] }
   }
   if (entry) {
-    entry.id = `E${session.evidence.length + 1}`
+    entry.id = `E${s.evidence.length + 1}`
     entry.ts = Date.now()
-    pushEvidence(session, entry)
-    if (session.evidence.length > 200) session.evidence.shift()
+    pushEvidence(s, entry)
   }
 }
 function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
@@ -205,18 +204,18 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
       try {
         if (def.execute) {
           const res = withErrorClass(await def.execute(args, client))
-          updateSession(session, def.name, args, res)
-          recordAutoEvidence(def.name, args, res)
-          if (def.dangerous && res && res.success !== false) pushAudit(session, { tool: def.name, args, ts: Date.now() })
+          updateSession(s, def.name, args, res)
+          recordAutoEvidence(s, def.name, args, res)
+          if (def.dangerous && res && res.success !== false) pushAudit(s, { tool: def.name, args, ts: Date.now() })
           return res
         }
         const params = def.mapParams ? def.mapParams(args) : args
         const raw = await client.sendCommand(def.method, params)
         const mapped = def.mapResult ? def.mapResult(raw, args) : raw
         const wrapped = withErrorClass(mapped)
-        updateSession(session, def.name, args, wrapped)
-        recordAutoEvidence(def.name, args, wrapped)
-        if (def.dangerous && wrapped && wrapped.success !== false) pushAudit(session, { tool: def.name, args, ts: Date.now() })
+        updateSession(s, def.name, args, wrapped)
+        recordAutoEvidence(s, def.name, args, wrapped)
+        if (def.dangerous && wrapped && wrapped.success !== false) pushAudit(s, { tool: def.name, args, ts: Date.now() })
         return wrapped
       } catch (err: any) {
         return {

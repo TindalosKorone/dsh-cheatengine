@@ -6,6 +6,10 @@ A DeepSeek Harness (DSH) plugin that lets agents drive Cheat Engine for single-p
 
 > ⚠️ **Token warning**: this plugin registers many `ce_*` tools, which **increases token usage per request**. Only `ce_status`, `ce_connect`, `ce_tool_search`, `ce_playbook`, and `ce_mission` are exposed by default; unlock tools on demand.
 
+## Scope
+
+This plugin targets **single-user / low-concurrency** local single-player debugging: attach one target process at a time and debug from one DSH session. When multiple sessions debug concurrently, state and the floating panel follow the **most recently active session**; this plugin is not recommended for high-concurrency or multi-agent CE debugging.
+
 ## Features
 
 - Memory scan / filter / read / write
