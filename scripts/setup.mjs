@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * One-command local setup for @dsh-external/dsh-cheatengine.
+ * One-command local setup for @tindalosko/dsh-cheatengine.
  *
  * Checks the repo is ready to use and creates the runtime dependency link
  * (@deepseek-ai/dsh-tools) when running from a source checkout.

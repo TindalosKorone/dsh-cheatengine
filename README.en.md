@@ -1,4 +1,4 @@
-# @dsh-external/dsh-cheatengine
+# @tindalosko/dsh-cheatengine
 
 **English** | [简体中文](README.md)
 
@@ -34,6 +34,14 @@ This plugin targets **single-user / low-concurrency** local single-player debugg
 You can also ask the DSH agent to call `install_ce_bridge` to automate steps 1–2.
 
 ### 2. DSH side
+
+Install from npm (recommended):
+
+```bash
+dsh plugin add @tindalosko/dsh-cheatengine
+```
+
+Or install from GitHub:
 
 ```bash
 dsh plugin add github:TindalosKorone/dsh-cheatengine

@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-cheatengine — Cheat Engine bridge toolkit.
+ * @tindalosko/dsh-cheatengine — Cheat Engine bridge toolkit.
  *
  * Exposes ce_* tools to the DSH agent. The plugin is a thin JSON-RPC client
  * for the Cheat Engine MCP Bridge (ce_mcp_bridge.lua + ce_mcp_tcp DLL):
@@ -31,7 +31,7 @@ import { RESIDENT_TOOLS, TOOL_PACKS, COMPAT_TOOLS, isOwnTool } from './tools/con
 
 export { createToolDefs } from './tools/index.js'
 
-export const name = '@dsh-external/dsh-cheatengine'
+export const name = '@tindalosko/dsh-cheatengine'
 export const inject = ['tools', 'skills', 'webServer']
 
 export interface Config {
@@ -321,5 +321,5 @@ export function apply(ctx: Context, config: Config): void {
       for (const dispose of cleanups) dispose()
       client.close()
     }
-  }, '@dsh-external/dsh-cheatengine: tools + progressive disclosure')
+  }, '@tindalosko/dsh-cheatengine: tools + progressive disclosure')
 }

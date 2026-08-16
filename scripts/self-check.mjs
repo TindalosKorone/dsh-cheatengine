@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Local self-check for @dsh-external/dsh-cheatengine.
+ * Local self-check for @tindalosko/dsh-cheatengine.
  *
  * Verifies:
  *   - lib build exists

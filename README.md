@@ -1,4 +1,4 @@
-# @dsh-external/dsh-cheatengine
+# @tindalosko/dsh-cheatengine
 
 [English](README.en.md) | **简体中文**
 
@@ -34,6 +34,14 @@
 也可以让 Agent 调用 `install_ce_bridge` 自动完成。
 
 ### 2. DSH 端
+
+推荐从 npm 安装：
+
+```bash
+dsh plugin add @tindalosko/dsh-cheatengine
+```
+
+或从 GitHub 安装：
 
 ```bash
 dsh plugin add github:TindalosKorone/dsh-cheatengine

@@ -1,5 +1,5 @@
 /**
- * @dsh-external/dsh-cheatengine — client floating status panel.
+ * @tindalosko/dsh-cheatengine — client floating status panel.
  * Registered on the `shell.overlay` slot. Polls `/ce-status/api` every 2s
  * and renders a minimal human-readable summary. Non-blocking.
  *
@@ -168,8 +168,8 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register({
       name: 'shell.overlay',
-      id: '@dsh-external/dsh-cheatengine-panel',
+      id: '@tindalosko/dsh-cheatengine-panel',
       label: () => 'CE Status',
     }, Panel),
-  ), '@dsh-external/dsh-cheatengine: status panel')
+  ), '@tindalosko/dsh-cheatengine: status panel')
 }
