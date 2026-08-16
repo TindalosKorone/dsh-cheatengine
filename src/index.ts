@@ -18,6 +18,8 @@
  *   3. File → Execute Script → run MCP_Server/ce_mcp_bridge.lua.
  *   4. Bridge listens on TCP 127.0.0.1:17171 by default.
  */
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import type { Context } from 'cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from 'schemastery'
@@ -44,6 +46,72 @@ const DEFAULTS: Config = {
   timeoutMs: 90000,
 }
 
+function classifyError(error: any): string {
+  const text = String((error && error.message) || error || "").toLowerCase()
+  if (text.includes("no process attached") || text.includes("open_process") || text.includes("not attached")) return "NO_PROCESS"
+  if (text.includes("econnrefused") || text.includes("timed out") || text.includes("bridge")) return "BRIDGE_UNAVAILABLE"
+  if (text.includes("no scan results") || text.includes("no previous scan")) return "NO_SCAN"
+  if (text.includes("invalid address") || text.includes("address")) return "INVALID_ADDRESS"
+  if (text.includes("breakpoint") || text.includes("debug register")) return "BREAKPOINT_ERROR"
+  if (text.includes("permission") || text.includes("denied") || text.includes("not writable")) return "PERMISSION_DENIED"
+  if (text.includes("timeout")) return "TIMEOUT"
+  if (text.includes("to undo") || text.includes("cannot undo")) return "UNDO_NOT_SUPPORTED"
+  if (text.includes("no snapshot")) return "NO_SNAPSHOT"
+  if (text.includes("invalid args") || text.includes("required")) return "INVALID_ARGS"
+  return "UNKNOWN"
+}
+
+function withErrorClass(result: any, error?: any): any {
+  if (result && result.success === false) {
+    return { ...result, error_class: classifyError(result.error) }
+  }
+  if (result === undefined || result === null) {
+    return { success: false, error: String((error && error.message) || error || "unknown"), error_class: classifyError(error) }
+  }
+  return result
+}
+
+const session = {
+  phase: 'idle',
+  startTime: Date.now(),
+  calls: [] as any[],
+  scanCount: 0,
+  cache: new Map<string, any>(),
+  locks: new Set<string>(),
+  audit: [] as any[],
+  hypotheses: [] as any[],
+  undoStack: [] as any[],
+}
+
+let snapshot: any = null
+
+function updateSession(toolName: string, args: any, result: any): void {
+  session.calls.push({
+    tool: toolName,
+    ts: Date.now(),
+    ok: !(result && result.success === false),
+    error_class: result && result.error_class,
+  })
+  if (session.calls.length > 200) session.calls.shift()
+
+  if (toolName === 'ce_scan' && result && result.success !== false) {
+    session.phase = 'scanning'
+    session.scanCount = Number(result.count) || 0
+    session.cache.set(String(args.value), { type: args.type || 'dword', count: session.scanCount, ts: Date.now() })
+  } else if (toolName === 'ce_next_scan' && result && result.success !== false) {
+    session.phase = 'filtering'
+    session.scanCount = Number(result.count) || 0
+  } else if (toolName === 'ce_find_what_writes' && result && result.success !== false) {
+    session.phase = 'tracing'
+  } else if (toolName === 'ce_pointer_scan' && result && result.success !== false) {
+    session.phase = 'verifying'
+  } else if (toolName === 'ce_lock_address' && result && result.success !== false) {
+    session.phase = 'locked'
+    session.locks.add(String(args.address))
+  } else if (toolName === 'ce_unlock_address' && result && result.success !== false) {
+    session.locks.delete(String(args.address))
+  }
+}
 /** Always-visible tools: connection status + on-demand discovery. */
 const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search'])
 
@@ -53,6 +121,8 @@ interface ToolDef {
   parameters?: Record<string, any>
   method: string
   mapParams?: (args: any) => Record<string, any>
+  mapResult?: (result: any, args: any) => any
+  execute?: (args: any, client: CEClient) => Promise<any>
   dangerous?: boolean
   kind?: 'search'
 }
@@ -122,8 +192,13 @@ function createToolDefs(client: CEClient): ToolDef[] {
       method: 'scan_all',
       parameters: {
         value: { type: 'string', required: true, description: '要搜索的值，如 "100"、"hello" 或 "48 89 5C"' },
-        type: { type: 'string', description: 'exact|string|array，默认 exact' },
+        type: { type: 'string', description: 'byte|word|dword|qword|float|double|string，默认 dword（兼容旧值 exact→dword）' },
         protection: { type: 'string', description: '内存保护，默认 +W-C' },
+      },
+      mapParams: (args) => {
+        const type = args.type || 'dword'
+        const normalized = type === 'exact' ? 'dword' : type
+        return { ...args, type: normalized }
       },
     },
     {
@@ -215,6 +290,17 @@ function createToolDefs(client: CEClient): ToolDef[] {
         value: { type: 'integer', required: true, description: '要写入的数值' },
         type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
       },
+      async execute(args: any, client: any) {
+        const address = String(args.address || '').trim()
+        const type = args.type || 'dword'
+        const beforeRes = await client.sendCommand('read_integer', { address, type })
+        const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
+        const res = await client.sendCommand('write_integer', { address, value: Number(args.value), type })
+        if (res && res.success !== false) {
+          session.undoStack.push({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
+        }
+        return res
+      },
     },
     {
       name: 'ce_write_memory',
@@ -305,6 +391,34 @@ function createToolDefs(client: CEClient): ToolDef[] {
         id: { type: 'string', description: '指定断点 ID，缺省全部' },
         clear: { type: 'boolean', description: '读取后是否清空，默认 false' },
         limit: { type: 'integer', description: '返回条数，默认 100' },
+        offset: { type: 'integer', description: '跳过前 N 条，默认 0' },
+        filter: { type: 'string', description: '寄存器过滤，如 RDI=1B5AD10F640（十六进制不带 0x）' },
+      },
+      mapParams: (args) => {
+        if (args.filter) {
+          return { ...args, offset: 0, limit: 10000 }
+        }
+        return args
+      },
+      mapResult: (result, args) => {
+        if (!result || !Array.isArray(result.hits)) return result
+        let hits = result.hits
+        if (args.filter) {
+          const m = /^([A-Za-z0-9_]+)=([0-9A-Fa-f]+)$/.exec(args.filter)
+          if (m) {
+            const reg = m[1].toUpperCase()
+            const val = m[2].toUpperCase()
+            hits = hits.filter((hit: any) => {
+              const r = hit && hit.registers ? hit.registers[reg] : undefined
+              return r && r.toUpperCase().replace(/^0X/, '') === val
+            })
+          }
+          const offset = Number(args.offset) || 0
+          const limit = Number(args.limit) || 100
+          hits = hits.slice(offset, offset + limit)
+          return { ...result, hits, offset, limit, returned: hits.length, total: hits.length }
+        }
+        return result
       },
     },
     {
@@ -315,16 +429,29 @@ function createToolDefs(client: CEClient): ToolDef[] {
     },
     {
       name: 'ce_get_registers',
-      description: '获取当前线程寄存器（RAX/RBX/... 或 EAX/EBX/...）',
+      description: '获取当前线程寄存器（RAX/RBX/... 或 EAX/EBX/...），含 XMM0-XMM15',
       method: 'evaluate_lua',
       mapParams: () => ({
         code: [
+          'local parts = {}',
           'local function h(v) if v == nil then return "nil" end return string.format("%X", v) end',
           'if targetIs64Bit() then',
-          '  return string.format("RAX=%s RBX=%s RCX=%s RDX=%s RSI=%s RDI=%s RBP=%s RSP=%s RIP=%s R8=%s R9=%s R10=%s R11=%s R12=%s R13=%s R14=%s R15=%s EFLAGS=%s", h(RAX), h(RBX), h(RCX), h(RDX), h(RSI), h(RDI), h(RBP), h(RSP), h(RIP), h(R8), h(R9), h(R10), h(R11), h(R12), h(R13), h(R14), h(R15), h(EFLAGS))',
+          '  parts[#parts+1] = string.format("RAX=%s RBX=%s RCX=%s RDX=%s RSI=%s RDI=%s RBP=%s RSP=%s RIP=%s R8=%s R9=%s R10=%s R11=%s R12=%s R13=%s R14=%s R15=%s EFLAGS=%s", h(RAX), h(RBX), h(RCX), h(RDX), h(RSI), h(RDI), h(RBP), h(RSP), h(RIP), h(R8), h(R9), h(R10), h(R11), h(R12), h(R13), h(R14), h(R15), h(EFLAGS))',
           'else',
-          '  return string.format("EAX=%s EBX=%s ECX=%s EDX=%s ESI=%s EDI=%s EBP=%s ESP=%s EIP=%s EFLAGS=%s", h(EAX), h(EBX), h(ECX), h(EDX), h(ESI), h(EDI), h(EBP), h(ESP), h(EIP), h(EFLAGS))',
+          '  parts[#parts+1] = string.format("EAX=%s EBX=%s ECX=%s EDX=%s ESI=%s EDI=%s EBP=%s ESP=%s EIP=%s EFLAGS=%s", h(EAX), h(EBX), h(ECX), h(EDX), h(ESI), h(EDI), h(EBP), h(ESP), h(EIP), h(EFLAGS))',
           'end',
+          'for i=0,15 do',
+          '  local ok, ptr = pcall(debug_getXMMPointer, i)',
+          '  if ok and ptr then',
+          '    local b = readBytes(ptr, 16, true)',
+          '    if b then',
+          '      local hex = {}',
+          '      for j=1,16 do hex[j] = string.format("%02X", b[j]) end',
+          '      parts[#parts+1] = string.format("XMM%d=%s", i, table.concat(hex, " "))',
+          '    end',
+          '  end',
+          'end',
+          'return table.concat(parts, " ")',
         ].join('\n'),
       }),
     },
@@ -349,6 +476,479 @@ function createToolDefs(client: CEClient): ToolDef[] {
       },
     },
 
+    {
+      name: 'ce_find_what_writes',
+      description: '一键查找谁改写了指定地址：自动设写入断点、等待触发、返回 RIP/反汇编/寄存器',
+      method: 'ce_find_what_writes',
+      dangerous: true,
+      parameters: {
+        address: { type: 'string', required: true, description: '要监控的地址' },
+        access_type: { type: 'string', description: 'r|w|rw，默认 w' },
+        size: { type: 'integer', description: '监控字节数，默认 4' },
+        timeout_ms: { type: 'integer', description: '等待超时毫秒，默认 15000' },
+      },
+      async execute(args: any, client: any) {
+        const address = String(args.address || '').trim()
+        if (!address) return { success: false, error: 'address is required' }
+        const accessType = args.access_type || 'w'
+        const size = Number(args.size) || 4
+        const timeoutMs = Number(args.timeout_ms) || 15000
+        const bpId = `find_${Date.now()}`
+        const setRes = await client.sendCommand('set_data_breakpoint', { address, access_type: accessType, size, id: bpId })
+        if (!setRes || setRes.success === false) return setRes || { success: false, error: 'set_data_breakpoint failed' }
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 500))
+          const hitsRes = await client.sendCommand('get_breakpoint_hits', { id: bpId, clear: false, limit: 10, offset: 0 })
+          if (hitsRes && hitsRes.success !== false && Array.isArray(hitsRes.hits) && hitsRes.hits.length > 0) {
+            const hit = hitsRes.hits[0]
+            let disasm: any[] = []
+            if (hit.registers && hit.registers.RIP) {
+              const disRes = await client.sendCommand('disassemble', { address: hit.registers.RIP, count: 20, limit: 20 })
+              if (disRes && Array.isArray(disRes.instructions)) disasm = disRes.instructions
+            }
+            await client.sendCommand('remove_breakpoint', { id: bpId }).catch(() => {})
+            return { success: true, breakpoint_id: bpId, hit, disassembly: disasm }
+          }
+        }
+        await client.sendCommand('remove_breakpoint', { id: bpId }).catch(() => {})
+        return { success: false, error: `No write to ${address} within ${timeoutMs}ms`, breakpoint_id: bpId }
+      },
+    },
+    {
+      name: 'ce_lock_address',
+      description: '锁定/冻结指定地址：周期性写回目标值，适合做无限资源',
+      method: 'ce_lock_address',
+      dangerous: true,
+      parameters: {
+        address: { type: 'string', required: true, description: '要锁定的地址' },
+        value: { type: 'number', required: true, description: '要锁定的值' },
+        type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
+        interval_ms: { type: 'integer', description: '写回间隔毫秒，默认 100' },
+      },
+      async execute(args: any, client: any) {
+        const address = String(args.address || '').trim()
+        const value = Number(args.value)
+        if (!address || !Number.isFinite(value)) return { success: false, error: 'address and value are required' }
+        const type = args.type || 'dword'
+        const interval = Number(args.interval_ms) || 100
+        const addrNum = Number.parseInt(address.replace(/^0x/i, ''), 16)
+        if (!Number.isFinite(addrNum)) return { success: false, error: 'invalid address' }
+        const writers: Record<string, string> = {
+          byte: `writeBytes(addr, {value})`,
+          word: `writeSmallInteger(addr, value)`,
+          dword: `writeInteger(addr, value)`,
+          qword: `writeQword(addr, value)`,
+          float: `writeFloat(addr, value)`,
+          double: `writeDouble(addr, value)`,
+        }
+        const writer = writers[type]
+        if (!writer) return { success: false, error: `unsupported type: ${type}` }
+        const lua = [
+          `local addr = ${addrNum}`,
+          `local value = ${value}`,
+          `_G.__mcp_locks = _G.__mcp_locks or {}`,
+          `if _G.__mcp_locks[addr] then _G.__mcp_locks[addr].destroy() end`,
+          `local timer = createTimer(nil, false)`,
+          `timer.Interval = ${interval}`,
+          `timer.OnTimer = function()`,
+          `  ${writer}`,
+          `end`,
+          `timer.Enabled = true`,
+          `_G.__mcp_locks[addr] = timer`,
+          `return "locked"`,
+        ].join('\n')
+        const res = await client.sendCommand('evaluate_lua', { code: lua })
+        if (res && res.success !== false) {
+          session.undoStack.push({ kind: 'lock', address, value, type, ts: Date.now() })
+        }
+        return { success: true, address, value, type, interval_ms: interval, lua_result: res }
+      },
+    },
+    {
+      name: 'ce_unlock_address',
+      description: '停止锁定指定地址',
+      method: 'ce_unlock_address',
+      dangerous: true,
+      parameters: {
+        address: { type: 'string', required: true, description: '要解锁的地址' },
+      },
+      async execute(args: any, client: any) {
+        const address = String(args.address || '').trim()
+        const addrNum = Number.parseInt(address.replace(/^0x/i, ''), 16)
+        if (!Number.isFinite(addrNum)) return { success: false, error: 'invalid address' }
+        const lua = [
+          `local addr = ${addrNum}`,
+          `if _G.__mcp_locks and _G.__mcp_locks[addr] then`,
+          `  _G.__mcp_locks[addr].destroy()`,
+          `  _G.__mcp_locks[addr] = nil`,
+          `  return "unlocked"`,
+          `else`,
+          `  return "not locked"`,
+          `end`,
+        ].join('\n')
+        const res = await client.sendCommand('evaluate_lua', { code: lua })
+        return { success: true, address, lua_result: res }
+      },
+    },
+    {
+      name: 'ce_pointer_scan',
+      description: '基础版指针扫描：从目标地址向上查找指向它的指针链（最多 max_depth 层）',
+      method: 'ce_pointer_scan',
+      dangerous: true,
+      parameters: {
+        address: { type: 'string', required: true, description: '目标地址' },
+        max_depth: { type: 'integer', description: '最大层数，默认 3，最高 6' },
+        max_results: { type: 'integer', description: '最多返回链数，默认 20' },
+      },
+      async execute(args: any, client: any) {
+        const address = String(args.address || '').trim()
+        const maxDepth = Math.min(Number(args.max_depth) || 3, 6)
+        const maxResults = Math.min(Number(args.max_results) || 20, 100)
+        if (!address) return { success: false, error: 'address is required' }
+        const target = Number.parseInt(address.replace(/^0x/i, ''), 16)
+        if (!Number.isFinite(target)) return { success: false, error: 'invalid address' }
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+        const scanPointersTo = async (addr: number) => {
+          const lua = [
+            `local target = ${addr}`,
+            `local ms = createMemScan()`,
+            `ms.firstScan(soExactValue, vtQword, rtRounded, string.format("%d", target), nil, 0, 0x7FFFFFFFFFFFFFFF, "+R", fsmNotAligned, "1", false, false, false, false)`,
+            `ms.waitTillDone()`,
+            `local fl = createFoundList(ms)`,
+            `fl.initialize()`,
+            `local out = {}`,
+            `for i=0, fl.Count-1 do`,
+            `  local a = tonumber(fl.getAddress(i), 16)`,
+            `  if a then out[#out+1] = string.format("%X", a) end`,
+            `end`,
+            `fl.destroy()`,
+            `ms.destroy()`,
+            `return table.concat(out, ",")`,
+          ].join('\n')
+          const res = await client.sendCommand('evaluate_lua', { code: lua })
+          const text = res && typeof res.result === 'string' ? res.result : ''
+          if (!text) return []
+          return text.split(',').filter(Boolean).map((s: string) => Number.parseInt(s, 16)).filter((n: number) => Number.isFinite(n))
+        }
+        let chains: number[][] = [[target]]
+        for (let depth = 1; depth <= maxDepth; depth++) {
+          const newChains: number[][] = []
+          for (const chain of chains) {
+            const head = chain[0]
+            const ptrs = await scanPointersTo(head)
+            for (const ptr of ptrs) {
+              newChains.push([ptr, ...chain])
+              if (newChains.length >= maxResults) break
+            }
+            if (newChains.length >= maxResults) break
+          }
+          chains = newChains
+          if (chains.length === 0) break
+          await sleep(100)
+        }
+        const formatted = chains.slice(0, maxResults).map((chain) => chain.map((a) => '0x' + a.toString(16).toUpperCase()))
+        return { success: true, target: address, max_depth: maxDepth, count: formatted.length, chains: formatted }
+      },
+    },
+    {
+      name: 'ce_detect_engine',
+      description: '识别当前附加进程的常见游戏引擎（Unity/Unreal/Godot/Source 等）',
+      method: 'ce_detect_engine',
+      async execute(args: any, client: any) {
+        const info = await client.sendCommand('get_process_info', {})
+        if (!info || info.success === false) return info || { success: false, error: 'get_process_info failed' }
+        const mods = Array.isArray(info.modules) ? info.modules.map((m: any) => String(m.name || '').toLowerCase()) : []
+        const detect = (names: string[]) => names.some((n) => mods.some((m: string) => m.includes(n)))
+        let engine = 'unknown'
+        if (detect(['unityplayer.dll', 'gameassembly.dll', 'mono-2.0-bdwgc.dll'])) engine = 'Unity'
+        else if (detect(['unrealengine', 'ue4-', 'ue5-', 'unreal'])) engine = 'Unreal Engine'
+        else if (detect(['godot'])) engine = 'Godot'
+        else if (detect(['engine.dll', 'source2', 'vphysics'])) engine = 'Source/Source2'
+        return { success: true, process_name: info.process_name, process_id: info.process_id, engine, modules: info.modules }
+      },
+    },
+    {
+      name: 'install_ce_bridge',
+      description: '一键安装 CE 桥接：把 ce_mcp_bridge.lua 和 ce_mcp_tcp_x64/x86.dll 复制到 CE 目录，并写入 autorun 自动启动脚本',
+      method: 'install_ce_bridge',
+      dangerous: true,
+      parameters: {
+        ce_dir: { type: 'string', required: true, description: 'Cheat Engine 安装目录，如 D:\\Game\\Cheat Engine 7.6' },
+        source_dir: { type: 'string', required: true, description: '桥接文件所在目录（含 ce_mcp_bridge.lua 和 ce_mcp_tcp_*.dll）' },
+      },
+      async execute(args: any) {
+        const ceDir = String(args.ce_dir || '').trim()
+        const sourceDir = String(args.source_dir || '').trim()
+        if (!ceDir || !sourceDir) return { success: false, error: 'ce_dir and source_dir are required' }
+        const files = ['ce_mcp_bridge.lua', 'ce_mcp_tcp_x64.dll', 'ce_mcp_tcp_x86.dll']
+        const copied: string[] = []
+        for (const f of files) {
+          const src = path.join(sourceDir, f)
+          const dst = path.join(ceDir, f)
+          try {
+            await fs.copyFile(src, dst)
+            copied.push(dst)
+          } catch (err: any) {
+            return { success: false, error: `copy ${f} failed: ${String((err && err.message) || err)}`, copied }
+          }
+        }
+        const autorunDir = path.join(ceDir, 'autorun')
+        await fs.mkdir(autorunDir, { recursive: true })
+        const autorunScript = `loadfile("${ceDir.replace(/\\/g, '\\\\')}\\\\ce_mcp_bridge.lua")()` + '\n'
+        const autorunPath = path.join(autorunDir, 'start_mcp_bridge.lua')
+        await fs.writeFile(autorunPath, autorunScript, 'utf8')
+        copied.push(autorunPath)
+        return { success: true, copied }
+      },
+    },
+    {
+      name: 'ce_session_stats',
+      description: '查看当前 CE 调试会话的统计信息：阶段、调用次数、扫描候选数、锁定列表等',
+      method: 'ce_session_stats',
+      async execute() {
+        return {
+          success: true,
+          phase: session.phase,
+          call_count: session.calls.length,
+          scan_count: session.scanCount,
+          locked_addresses: Array.from(session.locks),
+          cache_size: session.cache.size,
+          recent_calls: session.calls.slice(-20).reverse().map((c: any) => ({ tool: c.tool, ts: c.ts, ok: c.ok, error_class: c.error_class || null })),
+        }
+      },
+    },
+    {
+      name: 'ce_cache_status',
+      description: '查看插件内部缓存（已扫描过的值/类型/候选数）',
+      method: 'ce_cache_status',
+      async execute() {
+        const entries: any[] = []
+        session.cache.forEach((v: any, k: string) => entries.push({ key: k, ...v }))
+        return { success: true, cache_size: entries.length, entries }
+      },
+    },
+    {
+      name: 'ce_forget',
+      description: '清除插件内部缓存；不传 key 则清空全部',
+      method: 'ce_forget',
+      parameters: {
+        key: { type: 'string', description: '要清除的缓存 key（如扫描值），缺省清空全部' },
+      },
+      async execute(args: any) {
+        const key = args.key ? String(args.key) : null
+        if (key) {
+          session.cache.delete(key)
+          return { success: true, cleared: key }
+        }
+        session.cache.clear()
+        return { success: true, cleared: 'all' }
+      },
+    },
+    {
+      name: 'ce_scan_many',
+      description: '批量扫描多个值，返回每个值的候选数（最后一次扫描会保留为当前扫描状态）',
+      method: 'ce_scan_many',
+      parameters: {
+        values: { type: 'array', items: { type: 'string' }, required: true, description: '要扫描的值数组，如 ["100","200"]' },
+        type: { type: 'string', description: 'byte|word|dword|qword|float|double|string，默认 dword' },
+        protection: { type: 'string', description: '内存保护，默认 +W-C' },
+      },
+      async execute(args: any, client: any) {
+        const values = Array.isArray(args.values) ? args.values.map(String) : []
+        if (values.length === 0) return { success: false, error: 'values is required', error_class: 'INVALID_ARGS' }
+        const type = args.type || 'dword'
+        const protection = args.protection || '+W-C'
+        const results: any[] = []
+        for (const value of values) {
+          const res = await client.sendCommand('scan_all', { value, type, protection })
+          results.push({ value, count: res && res.count, success: !(res && res.success === false) })
+        }
+        return { success: true, type, results }
+      },
+    },
+    {
+      name: 'ce_read_many',
+      description: '批量读取多个地址的数值',
+      method: 'ce_read_many',
+      parameters: {
+        addresses: { type: 'array', items: { type: 'string' }, required: true, description: '地址数组，如 ["0x1000","0x2000"]' },
+        type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
+        max_results: { type: 'integer', description: '最多返回条数，默认 100' },
+      },
+      async execute(args: any, client: any) {
+        let addresses = Array.isArray(args.addresses) ? args.addresses.map(String) : []
+        if (addresses.length === 0) return { success: false, error: 'addresses is required', error_class: 'INVALID_ARGS' }
+        const maxResults = Math.min(Number(args.max_results) || 100, 1000)
+        const truncated = addresses.length > maxResults
+        addresses = addresses.slice(0, maxResults)
+        const type = args.type || 'dword'
+        const results: any[] = []
+        for (const address of addresses) {
+          const res = await client.sendCommand('read_integer', { address, type })
+          results.push({ address, value: res && res.value, success: !(res && res.success === false) })
+        }
+        return { success: true, type, results, truncated }
+      },
+    },
+    {
+      name: 'ce_write_many',
+      description: '批量写入多个地址的数值（危险）',
+      method: 'ce_write_many',
+      dangerous: true,
+      parameters: {
+        addresses: { type: 'array', items: { type: 'string' }, required: true, description: '地址数组' },
+        values: { type: 'array', items: { type: 'number' }, required: true, description: '值数组，与 addresses 一一对应' },
+        type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
+        max_results: { type: 'integer', description: '最多处理/返回条数，默认 100' },
+      },
+      async execute(args: any, client: any) {
+        let addresses = Array.isArray(args.addresses) ? args.addresses.map(String) : []
+        const values = Array.isArray(args.values) ? args.values.map(Number) : []
+        if (addresses.length === 0 || addresses.length !== values.length) {
+          return { success: false, error: 'addresses and values must be non-empty arrays of same length', error_class: 'INVALID_ARGS' }
+        }
+        const maxResults = Math.min(Number(args.max_results) || 100, 1000)
+        const truncated = addresses.length > maxResults
+        addresses = addresses.slice(0, maxResults)
+        const type = args.type || 'dword'
+        const results: any[] = []
+        for (let i = 0; i < addresses.length; i++) {
+          const beforeRes = await client.sendCommand('read_integer', { address: addresses[i], type })
+          const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
+          const res = await client.sendCommand('write_integer', { address: addresses[i], value: values[i], type })
+          results.push({ address: addresses[i], value: values[i], success: !(res && res.success === false) })
+          if (res && res.success !== false) {
+            session.undoStack.push({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
+          }
+        }
+        return { success: true, type, results, truncated }
+      },
+    },
+    {
+      name: 'ce_budget_status',
+      description: '查看当前会话的预算/消耗情况：调用次数、运行时长等',
+      method: 'ce_budget_status',
+      async execute() {
+        const elapsedMs = Date.now() - session.startTime
+        return {
+          success: true,
+          call_count: session.calls.length,
+          elapsed_ms: elapsedMs,
+          elapsed_seconds: Math.round(elapsedMs / 1000),
+          scan_count: session.scanCount,
+          phase: session.phase,
+        }
+      },
+    },
+    {
+      name: 'ce_audit_log',
+      description: '查看本会话的危险操作审计日志',
+      method: 'ce_audit_log',
+      async execute() {
+        return { success: true, count: session.audit.length, entries: session.audit.slice(-50).reverse() }
+      },
+    },
+    {
+      name: 'ce_snapshot_save',
+      description: '保存当前会话状态快照（阶段、锁定列表、缓存）',
+      method: 'ce_snapshot_save',
+      async execute() {
+        snapshot = {
+          phase: session.phase,
+          scanCount: session.scanCount,
+          locks: Array.from(session.locks),
+          cache: Array.from(session.cache.entries()),
+          ts: Date.now(),
+        }
+        return { success: true, saved: true, phase: snapshot.phase, locks: snapshot.locks, cache_size: snapshot.cache.length, ts: snapshot.ts }
+      },
+    },
+    {
+      name: 'ce_snapshot_load',
+      description: '加载最近一次保存的会话状态快照',
+      method: 'ce_snapshot_load',
+      async execute() {
+        if (!snapshot) return { success: false, error: 'no snapshot saved', error_class: 'NO_SNAPSHOT' }
+        session.phase = snapshot.phase
+        session.scanCount = snapshot.scanCount
+        session.locks = new Set(snapshot.locks)
+        session.cache = new Map(snapshot.cache)
+        return { success: true, phase: session.phase, scan_count: session.scanCount, locks: Array.from(session.locks), cache_size: session.cache.size }
+      },
+    },
+    {
+      name: 'ce_risk_levels',
+      description: '查看危险工具的风险分级',
+      method: 'ce_risk_levels',
+      async execute() {
+        return {
+          success: true,
+          levels: {
+            L1_read_only: ['ce_read_memory', 'ce_read_integer', 'ce_read_string', 'ce_disassemble', 'ce_get_scan_results', 'ce_get_breakpoint_hits'],
+            L2_scan_analysis: ['ce_scan', 'ce_next_scan', 'ce_aob_scan', 'ce_pointer_scan', 'ce_detect_engine'],
+            L3_write_breakpoint: ['ce_write_integer', 'ce_write_memory', 'ce_write_string', 'ce_set_breakpoint', 'ce_set_data_breakpoint', 'ce_remove_breakpoint', 'ce_clear_breakpoints', 'ce_lock_address', 'ce_unlock_address', 'ce_find_what_writes'],
+            L4_script_inject: ['ce_execute_lua', 'ce_auto_assemble', 'install_ce_bridge'],
+          },
+        }
+      },
+    },
+    {
+      name: 'ce_hypothesis',
+      description: '记录/查看/清除调试假设，避免重复验证同一方向',
+      method: 'ce_hypothesis',
+      parameters: {
+        action: { type: 'string', description: 'add|list|clear，默认 list' },
+        id: { type: 'string', description: '假设 ID（add 时可选，list 时可按 ID 过滤）' },
+        statement: { type: 'string', description: '假设内容（add 时需要）' },
+        result: { type: 'string', description: '验证结果（add 时可选）' },
+      },
+      async execute(args: any) {
+        const action = args.action || 'list'
+        if (action === 'clear') {
+          session.hypotheses = []
+          return { success: true, cleared: true }
+        }
+        if (action === 'add') {
+          const id = args.id || `H${session.hypotheses.length + 1}`
+          session.hypotheses.push({ id, statement: args.statement || '', result: args.result || null, ts: Date.now() })
+          return { success: true, id, count: session.hypotheses.length }
+        }
+        const id = args.id ? String(args.id) : null
+        const entries = id ? session.hypotheses.filter((h: any) => h.id === id) : session.hypotheses
+        return { success: true, count: entries.length, entries }
+      },
+    },
+    {
+      name: 'ce_undo_last',
+      description: '撤销最近一次可撤销的危险操作（支持撤销最后一次锁定和带旧值的写入）',
+      method: 'ce_undo_last',
+      dangerous: true,
+      async execute(args: any, client: any) {
+        const last = session.undoStack.pop()
+        if (!last) return { success: false, error: 'no dangerous operation to undo', error_class: 'NOTHING_TO_UNDO' }
+        if (last.kind === 'lock' && last.address) {
+          const addr = String(last.address)
+          await client.sendCommand('evaluate_lua', {
+            code: [
+              `local addr = ${Number.parseInt(addr.replace(/^0x/i, ''), 16)}`,
+              `if _G.__mcp_locks and _G.__mcp_locks[addr] then _G.__mcp_locks[addr].destroy(); _G.__mcp_locks[addr] = nil end`,
+              `return "unlocked"`,
+            ].join('\n'),
+          })
+          session.locks.delete(addr)
+          return { success: true, undone: 'ce_lock_address', address: addr }
+        }
+        if (last.kind === 'write' && last.address) {
+          if (last.before === null || last.before === undefined) {
+            return { success: false, error: 'cannot undo write: previous value unknown', error_class: 'UNDO_NOT_SUPPORTED' }
+          }
+          const res = await client.sendCommand('write_integer', { address: last.address, value: last.before, type: last.type || 'dword' })
+          return { success: !(res && res.success === false), undone: 'ce_write_integer', address: last.address, restored: last.before }
+        }
+        return { success: false, error: `cannot undo ${last.kind} automatically`, error_class: 'UNDO_NOT_SUPPORTED' }
+      },
+    },
     // ── 按需解锁（常驻） ──────────────────────────────────────────
     {
       name: 'ce_tool_search',
@@ -413,7 +1013,7 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
           const matches = ceSchemas
             .filter((schema) => {
               const haystack = `${schema.name} ${schema.description || ''}`.toLowerCase()
-              return tokens.every((token) => haystack.includes(token))
+              return tokens.every((token: string) => haystack.includes(token))
             })
             .slice(0, 25)
           lines.push(`匹配工具（${matches.length}）：`)
@@ -446,12 +1046,24 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
     },
     async execute(args: any) {
       try {
+        if (def.execute) {
+          const res = withErrorClass(await def.execute(args, client))
+          updateSession(def.name, args, res)
+          if (def.dangerous && res && res.success !== false) session.audit.push({ tool: def.name, args, ts: Date.now() })
+          return res
+        }
         const params = def.mapParams ? def.mapParams(args) : args
-        return await client.sendCommand(def.method, params)
+        const raw = await client.sendCommand(def.method, params)
+        const mapped = def.mapResult ? def.mapResult(raw, args) : raw
+        const wrapped = withErrorClass(mapped)
+        updateSession(def.name, args, wrapped)
+        if (def.dangerous && wrapped && wrapped.success !== false) session.audit.push({ tool: def.name, args, ts: Date.now() })
+        return wrapped
       } catch (err: any) {
         return {
           success: false,
           error: String((err && err.message) || err),
+          error_class: classifyError(err),
         }
       }
     },

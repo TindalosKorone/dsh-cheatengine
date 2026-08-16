@@ -17,12 +17,14 @@
 
 ## 可解锁工具
 
-- 进程：`ce_list_processes`, `ce_attach`, `ce_process_info`, `ce_enum_modules`
-- 扫描：`ce_scan`, `ce_next_scan`, `ce_get_scan_results`, `ce_aob_scan`, `ce_search_string`
-- 读取：`ce_read_memory`, `ce_read_integer`, `ce_read_string`, `ce_read_pointer_chain`
+- 进程：`ce_list_processes`, `ce_attach`, `ce_process_info`, `ce_enum_modules`, `ce_detect_engine`
+- 扫描：`ce_scan`, `ce_next_scan`, `ce_get_scan_results`, `ce_aob_scan`, `ce_search_string`, `ce_pointer_scan`, `ce_scan_many`
+- 读取：`ce_read_memory`, `ce_read_integer`, `ce_read_string`, `ce_read_pointer_chain`, `ce_read_many`
 - 反汇编：`ce_disassemble`, `ce_get_instruction_info`
-- 断点/调试：`ce_set_breakpoint`, `ce_set_data_breakpoint`, `ce_list_breakpoints`, `ce_remove_breakpoint`, `ce_get_breakpoint_hits`, `ce_clear_breakpoints`, `ce_get_registers`
-- 危险（解锁前三思）：`ce_write_integer`, `ce_write_memory`, `ce_write_string`, `ce_execute_lua`, `ce_auto_assemble`
+- 断点/调试：`ce_set_breakpoint`, `ce_set_data_breakpoint`, `ce_list_breakpoints`, `ce_remove_breakpoint`, `ce_get_breakpoint_hits`, `ce_clear_breakpoints`, `ce_get_registers`, `ce_find_what_writes`
+- 锁定/冻结：`ce_lock_address`, `ce_unlock_address`, `ce_write_many`
+- 工程化：`ce_session_stats`, `ce_budget_status`, `ce_cache_status`, `ce_forget`, `ce_hypothesis`, `ce_audit_log`, `ce_undo_last`, `ce_snapshot_save`, `ce_snapshot_load`, `ce_risk_levels`
+- 危险（解锁前三思）：`ce_write_integer`, `ce_write_memory`, `ce_write_string`, `ce_execute_lua`, `ce_auto_assemble`, `install_ce_bridge`
 
 ## 安全
 
