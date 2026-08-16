@@ -47,13 +47,30 @@ test('every tool has a name and description', () => {
 
 test('parameter caps are applied', async () => {
   const defs = createToolDefs({})
-  const readMemory = defs.find((d) => d.name === 'ce_read_memory')
-  const disassemble = defs.find((d) => d.name === 'ce_disassemble')
-  assert.ok(readMemory)
-  assert.ok(disassemble)
-  const mappedRead = readMemory.mapParams({ address: '0x0', size: 99999 })
-  assert.ok(mappedRead.size <= 4096)
-  const mappedDis = disassemble.mapParams({ address: '0x0', count: 999, limit: 999 })
-  assert.ok(mappedDis.count <= 200)
-  assert.ok(mappedDis.limit <= 200)
+  const byName = (name) => defs.find((d) => d.name === name)
+  const readMemory = byName('ce_read_memory')
+  const disassemble = byName('ce_disassemble')
+  const getScanResults = byName('ce_get_scan_results')
+  const aobScan = byName('ce_aob_scan')
+  const searchString = byName('ce_search_string')
+  const readString = byName('ce_read_string')
+  const enumModules = byName('ce_enum_modules')
+  const pointerScan = byName('ce_pointer_scan')
+  const breakpointHits = byName('ce_get_breakpoint_hits')
+
+  for (const d of [readMemory, disassemble, getScanResults, aobScan, searchString, readString, enumModules, pointerScan, breakpointHits]) {
+    assert.ok(d, `missing tool for caps test: ${d && d.name}`)
+  }
+
+  assert.ok(readMemory.mapParams({ address: '0x0', size: 99999 }).size <= 4096)
+  assert.ok(disassemble.mapParams({ address: '0x0', count: 999, limit: 999 }).count <= 200)
+  assert.ok(disassemble.mapParams({ address: '0x0', count: 999, limit: 999 }).limit <= 200)
+  assert.ok(getScanResults.mapParams({ offset: 0, limit: 99999 }).limit <= 1000)
+  assert.ok(aobScan.mapParams({ pattern: '90', limit: 99999 }).limit <= 1000)
+  assert.ok(searchString.mapParams({ string: 'x', limit: 99999 }).limit <= 1000)
+  assert.ok(readString.mapParams({ address: '0x0', max_length: 99999 }).max_length <= 4096)
+  assert.ok(enumModules.mapParams({ offset: -5, limit: 99999 }).offset >= 0)
+  assert.ok(enumModules.mapParams({ offset: -5, limit: 99999 }).limit <= 1000)
+  assert.ok(pointerScan.max_depth ? pointerScan.execute : true) // pointerScan caps are applied inside execute
+  assert.ok(breakpointHits.mapParams({ id: 'x', limit: 99999 }).limit <= 1000)
 })

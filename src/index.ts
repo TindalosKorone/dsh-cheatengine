@@ -104,6 +104,12 @@ function updateSession(toolName: string, args: any, result: any): void {
   } else if (toolName === 'ce_next_scan' && result && result.success !== false) {
     session.phase = 'filtering'
     session.scanCount = Number(result.count) || 0
+  } else if (toolName === 'ce_scan_many' && result && result.success !== false && Array.isArray(result.results) && result.results.length > 0) {
+    const last = result.results[result.results.length - 1]
+    session.phase = 'scanning'
+    session.scanCount = Number(last?.count) || 0
+    const lastValue = Array.isArray(args.values) ? String(args.values[args.values.length - 1]) : ''
+    session.cache.set(lastValue, { type: args.type || 'dword', count: session.scanCount, ts: Date.now() })
   } else if (toolName === 'ce_find_what_writes' && result && result.success !== false) {
     session.phase = 'tracing'
   } else if (toolName === 'ce_pointer_scan' && result && result.success !== false) {
@@ -117,6 +123,7 @@ function updateSession(toolName: string, args: any, result: any): void {
 }
 /** Always-visible tools: connection status + on-demand discovery. */
 const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search'])
+const isOwnTool = (name: string) => name.startsWith('ce_') || name === 'install_ce_bridge'
 
 interface ToolDef {
   name: string
@@ -160,6 +167,15 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       name: 'ce_list_processes',
       description: '列出系统进程（PID+名称），供附加选择',
       method: 'get_process_list',
+      parameters: {
+        limit: { type: 'integer', description: '返回数量，默认 100' },
+      },
+      mapResult: (result: any, args: any) => {
+        if (!result || !Array.isArray(result.processes)) return result
+        const limit = Math.min(Number(args.limit) || 100, 1000)
+        const processes = result.processes.slice(0, limit)
+        return { ...result, processes, total: result.processes.length, returned: processes.length }
+      },
     },
     {
       name: 'ce_attach',
@@ -186,6 +202,11 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         offset: { type: 'integer', description: '分页偏移，默认 0' },
         limit: { type: 'integer', description: '返回数量，默认 100' },
       },
+      mapParams: (args) => ({
+        ...args,
+        offset: Math.max(0, Number(args.offset) || 0),
+        limit: Math.min(Number(args.limit) || 100, 1000),
+      }),
     },
 
     // ── 扫描 / 搜索 ────────────────────────────────────────────────
@@ -243,6 +264,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         wide: { type: 'boolean', description: '是否宽字符 UTF-16，默认 false' },
         limit: { type: 'integer', description: '最大返回数，默认 100' },
       },
+      mapParams: (args) => ({ ...args, limit: Math.min(Number(args.limit) || 100, 1000) }),
     },
 
     // ── 内存读取 ───────────────────────────────────────────────────
@@ -274,6 +296,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         max_length: { type: 'integer', description: '最大长度，默认 256' },
         encoding: { type: 'string', description: 'ascii|utf8|utf16le|raw，默认 utf8' },
       },
+      mapParams: (args) => ({ ...args, max_length: Math.min(Number(args.max_length) || 256, 4096) }),
     },
     {
       name: 'ce_read_pointer_chain',
@@ -281,8 +304,14 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       method: 'read_pointer_chain',
       parameters: {
         base: { type: 'string', required: true, description: '基址，如模块基址' },
-        offsets: { type: 'array', items: { type: 'integer' }, description: '每级偏移，如 [0x10, 0x20]' },
+        offsets: { type: 'array', items: { type: 'string' }, description: '每级偏移，如 ["0x10", "0x20"]' },
       },
+      mapParams: (args) => ({
+        ...args,
+        offsets: Array.isArray(args.offsets)
+          ? args.offsets.map((o: any) => typeof o === 'string' ? Number.parseInt(o.replace(/^0x/i, ''), 16) : Number(o))
+          : args.offsets,
+      }),
     },
 
     // ── 内存写入（危险） ───────────────────────────────────────────
@@ -293,7 +322,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       dangerous: true,
       parameters: {
         address: { type: 'string', required: true, description: '十六进制地址' },
-        value: { type: 'integer', required: true, description: '要写入的数值' },
+        value: { type: 'number', required: true, description: '要写入的数值' },
         type: { type: 'string', description: 'byte|word|dword|qword|float|double，默认 dword' },
       },
       async execute(args: any, client: any) {
@@ -406,6 +435,15 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       name: 'ce_list_breakpoints',
       description: '列出所有活动断点',
       method: 'list_breakpoints',
+      parameters: {
+        limit: { type: 'integer', description: '返回数量，默认 100' },
+      },
+      mapResult: (result: any, args: any) => {
+        if (!result || !Array.isArray(result.breakpoints)) return result
+        const limit = Math.min(Number(args.limit) || 100, 1000)
+        const breakpoints = result.breakpoints.slice(0, limit)
+        return { ...result, breakpoints, total: result.breakpoints.length, returned: breakpoints.length }
+      },
     },
     {
       name: 'ce_remove_breakpoint',
@@ -428,14 +466,16 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         filter: { type: 'string', description: '寄存器过滤，如 RDI=1B5AD10F640（十六进制不带 0x）' },
       },
       mapParams: (args) => {
+        const limit = Math.min(Number(args.limit) || 100, 1000)
         if (args.filter) {
-          return { ...args, offset: 0, limit: 10000 }
+          return { ...args, offset: 0, limit: Math.max(limit, 1000) }
         }
-        return args
+        return { ...args, limit }
       },
       mapResult: (result, args) => {
         if (!result || !Array.isArray(result.hits)) return result
         let hits = result.hits
+        let filteredCount = hits.length
         if (args.filter) {
           const m = /^([A-Za-z0-9_]+)=([0-9A-Fa-f]+)$/.exec(args.filter)
           if (m) {
@@ -445,11 +485,12 @@ export function createToolDefs(client: CEClient): ToolDef[] {
               const r = hit && hit.registers ? hit.registers[reg] : undefined
               return r && r.toUpperCase().replace(/^0X/, '') === val
             })
+            filteredCount = hits.length
           }
           const offset = Number(args.offset) || 0
           const limit = Number(args.limit) || 100
           hits = hits.slice(offset, offset + limit)
-          return { ...result, hits, offset, limit, returned: hits.length, total: hits.length }
+          return { ...result, hits, offset, limit, returned: hits.length, total: filteredCount }
         }
         return result
       },
@@ -592,9 +633,13 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           `return "locked"`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
-        if (res && res.success !== false) {
-          session.undoStack.push({ kind: 'lock', address, value, type, ts: Date.now() })
+        if (!res || res.success === false) {
+          return { success: false, error: (res && res.error) || 'lock failed', error_class: 'BRIDGE_UNAVAILABLE' }
         }
+        if (String(res.result || '').trim() !== 'locked') {
+          return { success: false, error: `lock failed: ${String(res.result || res.error || 'unknown')}`, error_class: 'LOCK_FAILED' }
+        }
+        session.undoStack.push({ kind: 'lock', address, value, type, ts: Date.now() })
         return { success: true, address, value, type, interval_ms: interval, lua_result: res }
       },
     },
@@ -621,6 +666,9 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           `end`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
+        if (!res || res.success === false) {
+          return { success: false, error: (res && res.error) || 'unlock failed', error_class: 'BRIDGE_UNAVAILABLE' }
+        }
         return { success: true, address, lua_result: res }
       },
     },
@@ -775,10 +823,14 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       name: 'ce_cache_status',
       description: '查看插件内部缓存（已扫描过的值/类型/候选数）',
       method: 'ce_cache_status',
-      async execute() {
+      parameters: {
+        limit: { type: 'integer', description: '返回条数，默认 100' },
+      },
+      async execute(args: any) {
         const entries: any[] = []
         session.cache.forEach((v: any, k: string) => entries.push({ key: k, ...v }))
-        return { success: true, cache_size: entries.length, entries }
+        const limit = Math.min(Number(args.limit) || 100, 1000)
+        return { success: true, cache_size: entries.length, entries: entries.slice(0, limit), returned: Math.min(entries.length, limit) }
       },
     },
     {
@@ -815,7 +867,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const results: any[] = []
         for (const value of values) {
           const res = await client.sendCommand('scan_all', { value, type, protection })
-          results.push({ value, count: res && res.count, success: !(res && res.success === false) })
+          results.push({ value, count: res?.count ?? null, success: !!(res && res.success !== false) })
         }
         return { success: true, type, results }
       },
@@ -839,7 +891,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const results: any[] = []
         for (const address of addresses) {
           const res = await client.sendCommand('read_integer', { address, type })
-          results.push({ address, value: res && res.value, success: !(res && res.success === false) })
+          results.push({ address, value: res?.value ?? null, success: !!(res && res.success !== false) })
         }
         return { success: true, type, results, truncated }
       },
@@ -870,7 +922,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const beforeRes = await client.sendCommand('read_integer', { address: addresses[i], type })
           const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
           const res = await client.sendCommand('write_integer', { address: addresses[i], value: values[i], type })
-          results.push({ address: addresses[i], value: values[i], success: !(res && res.success === false) })
+          results.push({ address: addresses[i], value: values[i], success: !!(res && res.success !== false) })
           if (res && res.success !== false) {
             session.undoStack.push({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
           }
@@ -963,8 +1015,10 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           return { success: true, cleared: true }
         }
         if (action === 'add') {
+          const statement = String(args.statement || '').trim()
+          if (!statement) return { success: false, error: 'statement is required for add', error_class: 'INVALID_ARGS' }
           const id = args.id || `H${session.hypotheses.length + 1}`
-          session.hypotheses.push({ id, statement: args.statement || '', result: args.result || null, ts: Date.now() })
+          session.hypotheses.push({ id, statement, result: args.result || null, ts: Date.now() })
           return { success: true, id, count: session.hypotheses.length }
         }
         const id = args.id ? String(args.id) : null
@@ -978,17 +1032,24 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       method: 'ce_undo_last',
       dangerous: true,
       async execute(args: any, client: any) {
-        const last = session.undoStack.pop()
+        const idx = session.undoStack.length - 1
+        const last = session.undoStack[idx]
         if (!last) return { success: false, error: 'no dangerous operation to undo', error_class: 'NOTHING_TO_UNDO' }
         if (last.kind === 'lock' && last.address) {
           const addr = String(last.address)
-          await client.sendCommand('evaluate_lua', {
+          const addrNum = Number.parseInt(addr.replace(/^0x/i, ''), 16)
+          if (!Number.isFinite(addrNum)) return { success: false, error: 'cannot undo lock: invalid address', error_class: 'INVALID_ADDRESS' }
+          const res = await client.sendCommand('evaluate_lua', {
             code: [
-              `local addr = ${Number.parseInt(addr.replace(/^0x/i, ''), 16)}`,
+              `local addr = ${addrNum}`,
               `if _G.__mcp_locks and _G.__mcp_locks[addr] then _G.__mcp_locks[addr].destroy(); _G.__mcp_locks[addr] = nil end`,
               `return "unlocked"`,
             ].join('\n'),
           })
+          if (!res || res.success === false) {
+            return { success: false, error: (res && res.error) || 'undo lock failed', error_class: 'BRIDGE_UNAVAILABLE' }
+          }
+          session.undoStack.pop()
           session.locks.delete(addr)
           return { success: true, undone: 'ce_lock_address', address: addr }
         }
@@ -997,17 +1058,29 @@ export function createToolDefs(client: CEClient): ToolDef[] {
             return { success: false, error: 'cannot undo write: previous value unknown', error_class: 'UNDO_NOT_SUPPORTED' }
           }
           const res = await client.sendCommand('write_integer', { address: last.address, value: last.before, type: last.type || 'dword' })
-          return { success: !(res && res.success === false), undone: 'ce_write_integer', address: last.address, restored: last.before }
+          if (!res || res.success === false) {
+            return { success: false, error: (res && res.error) || 'undo write failed', error_class: 'BRIDGE_UNAVAILABLE' }
+          }
+          session.undoStack.pop()
+          return { success: true, undone: 'ce_write_integer', address: last.address, restored: last.before }
         }
         if (last.kind === 'write_memory' && last.address) {
           if (!Array.isArray(last.before)) return { success: false, error: 'cannot undo write_memory: previous bytes unknown', error_class: 'UNDO_NOT_SUPPORTED' }
           const res = await client.sendCommand('write_memory', { address: last.address, bytes: last.before })
-          return { success: !(res && res.success === false), undone: 'ce_write_memory', address: last.address, restored: last.before }
+          if (!res || res.success === false) {
+            return { success: false, error: (res && res.error) || 'undo write_memory failed', error_class: 'BRIDGE_UNAVAILABLE' }
+          }
+          session.undoStack.pop()
+          return { success: true, undone: 'ce_write_memory', address: last.address, restored: last.before }
         }
         if (last.kind === 'write_string' && last.address) {
           if (last.before === null || last.before === undefined) return { success: false, error: 'cannot undo write_string: previous string unknown', error_class: 'UNDO_NOT_SUPPORTED' }
           const res = await client.sendCommand('write_string', { address: last.address, value: last.before, wide: !!last.wide })
-          return { success: !(res && res.success === false), undone: 'ce_write_string', address: last.address, restored: last.before }
+          if (!res || res.success === false) {
+            return { success: false, error: (res && res.error) || 'undo write_string failed', error_class: 'BRIDGE_UNAVAILABLE' }
+          }
+          session.undoStack.pop()
+          return { success: true, undone: 'ce_write_string', address: last.address, restored: last.before }
         }
         return { success: false, error: `cannot undo ${last.kind} automatically`, error_class: 'UNDO_NOT_SUPPORTED' }
       },
@@ -1088,9 +1161,11 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           return { success: true, cleared: true }
         }
         if (action === 'add') {
+          const claim = String(args.claim || '').trim()
+          if (!claim) return { success: false, error: 'claim is required for add', error_class: 'INVALID_ARGS' }
           const entry = {
             id: `E${session.evidence.length + 1}`,
-            claim: args.claim || '',
+            claim,
             method: args.method || '',
             result: args.result || '',
             tags: Array.isArray(args.tags) ? args.tags : [],
@@ -1139,7 +1214,17 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           `return "OK"`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
-        return { success: true, speed, status: res && res.result ? res.result : String((res && res.error) || '') }
+        if (!res || res.success === false) {
+          return { success: false, error: (res && res.error) || 'speedhack failed', error_class: 'BRIDGE_UNAVAILABLE' }
+        }
+        const status = String(res.result || '').trim()
+        if (status === 'NOT_READY') {
+          return { success: false, error: 'Speedhack is not ready (enable it in CE first)', error_class: 'NOT_READY' }
+        }
+        if (status !== 'OK') {
+          return { success: false, error: `speedhack failed: ${status || 'unknown'}`, error_class: 'SPEEDHACK_FAILED' }
+        }
+        return { success: true, speed, status }
       },
     },
     {
@@ -1177,7 +1262,14 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           `return "DUMPED"`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
-        return { success: true, module: mod.name, base: mod.address, size, output, status: res && res.result ? res.result : String((res && res.error) || '') }
+        if (!res || res.success === false) {
+          return { success: false, error: (res && res.error) || 'dump failed', error_class: 'BRIDGE_UNAVAILABLE' }
+        }
+        const status = String(res.result || '').trim()
+        if (status !== 'DUMPED') {
+          return { success: false, error: `dump failed: ${status || 'unknown'}`, error_class: 'DUMP_FAILED', status }
+        }
+        return { success: true, module: mod.name, base: mod.address, size, output, status }
       },
     },
     {
@@ -1202,7 +1294,14 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           `return table.concat(parts, " ")`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
-        const pattern = typeof res && typeof res.result === 'string' ? res.result : ''
+        if (!res || res.success === false) {
+          return { success: false, error: (res && res.error) || 'aob generate failed', error_class: 'BRIDGE_UNAVAILABLE' }
+        }
+        const raw = res && typeof res.result === 'string' ? res.result : ''
+        const pattern = raw.trim()
+        if (pattern === 'INVALID_ADDRESS' || pattern === 'READ_FAILED' || pattern === '') {
+          return { success: false, error: `aob generate failed: ${pattern || 'empty result'}`, error_class: pattern === 'INVALID_ADDRESS' ? 'INVALID_ADDRESS' : 'READ_FAILED' }
+        }
         return { success: true, address, size, pattern }
       },
     },
@@ -1376,8 +1475,8 @@ export function createToolDefs(client: CEClient): ToolDef[] {
     {
       name: 'ce_tool_search',
       description: [
-        '搜索并解锁当前不可见的 ce_* 工具。',
-        '本会话默认只暴露 ce_status、ce_connect。需要其他 Cheat Engine 工具时，先调用本工具搜索，再用 toolNames 精确解锁。',
+        '搜索并解锁当前不可见的 ce_* / install_ce_bridge 工具。',
+        '本会话默认只暴露 ce_status、ce_connect、ce_tool_search。需要其他 Cheat Engine 工具时，先调用本工具搜索，再用 toolNames 精确解锁。',
         '危险工具（写内存/断点/脚本）解锁后请谨慎使用。',
       ].join(' '),
       kind: 'search',
@@ -1443,7 +1542,7 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
         } catch (err: any) {
           lines.push(`目录搜索不可用：${String((err && err.message) || err)}`)
         }
-        const ceSchemas = schemas.filter((schema) => schema.name.startsWith('ce_'))
+        const ceSchemas = schemas.filter((schema) => isOwnTool(schema.name))
 
         if (unlock.length > 0) {
           const valid = ceSchemas.filter((schema) => unlock.includes(schema.name))
@@ -1473,7 +1572,7 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
         }
 
         if (query.length === 0 && unlock.length === 0) {
-          lines.push('当前常驻：ce_status、ce_connect。需要其他 ce_* 工具时，用 query 搜索，再用 toolNames 解锁。')
+          lines.push('当前常驻：ce_status、ce_connect、ce_tool_search。需要其他 ce_* 工具时，用 query 搜索，再用 toolNames 解锁。')
           lines.push('危险工具（写内存/断点/脚本）需显式解锁。')
         }
 
@@ -1744,14 +1843,17 @@ export function apply(ctx: Context, config: Config): void {
         const keep = new Set([...RESIDENT_TOOLS, ...unlocked])
         return {
           ...assembled,
-          tools: assembled.tools.filter((tool: any) => !tool.name.startsWith('ce_') || keep.has(tool.name)),
+          tools: assembled.tools.filter((tool: any) => !isOwnTool(tool.name) || keep.has(tool.name)),
         }
       } catch (err: any) {
-        // A filter bug must never break a session: fall back to full catalog.
+        // Fail closed: if the filter itself breaks, never leak the full catalog.
         try {
-          ctx.logger.warn(`dsh-cheatengine: assemble filter failed, exposing full ce_* catalog: ${String((err && err.message) || err)}`)
+          ctx.logger.warn(`dsh-cheatengine: assemble filter failed, keeping resident tools only: ${String((err && err.message) || err)}`)
         } catch { /* ignore */ }
-        return assembled
+        return {
+          ...assembled,
+          tools: assembled.tools.filter((tool: any) => !isOwnTool(tool.name) || RESIDENT_TOOLS.has(tool.name)),
+        }
       }
     })
 

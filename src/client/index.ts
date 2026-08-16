@@ -2,6 +2,9 @@
  * @dsh-external/dsh-cheatengine — client floating status panel.
  * Registered on the `shell.overlay` slot. Polls `/ce-status/api` every 2s
  * and renders a minimal human-readable summary. Non-blocking.
+ *
+ * The panel is optional: it can be closed with × and reopened via a small
+ * floating "🧊 CE" button. The choice is persisted in localStorage.
  */
 import { createElement, useEffect, useState } from 'react'
 import type { SlotsService } from '@deepseek-ai/dsh-client-ui-slots'
@@ -20,6 +23,24 @@ interface StatusData {
   summary?: string
 }
 
+const STORAGE_KEY = 'dsh-ce-panel-hidden'
+
+function readHidden(): boolean {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeHidden(hidden: boolean) {
+  try {
+    localStorage.setItem(STORAGE_KEY, hidden ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
 function row(label: string, value: string | number | undefined) {
   return createElement(
     'div',
@@ -31,7 +52,10 @@ function row(label: string, value: string | number | undefined) {
 
 function Panel(): any {
   const [data, setData] = useState<StatusData>({})
+  const [hidden, setHidden] = useState<boolean>(readHidden)
+
   useEffect(() => {
+    if (hidden) return
     let alive = true
     function tick() {
       fetch('/ce-status/api')
@@ -42,7 +66,34 @@ function Panel(): any {
     tick()
     const timer = setInterval(tick, 2000)
     return () => { alive = false; clearInterval(timer) }
-  }, [])
+  }, [hidden])
+
+  const reopenStyle = {
+    position: 'fixed',
+    right: 16,
+    bottom: 16,
+    zIndex: 99999,
+    border: '1px solid var(--dsw-alias-border-l2, #333)',
+    background: 'var(--dsw-alias-bg-layer-3, #1c1c1c)',
+    color: 'var(--dsw-alias-label-primary, #eee)',
+    borderRadius: 12,
+    padding: '8px 12px',
+    font: '12px/1.5 system-ui',
+    cursor: 'pointer',
+    boxShadow: 'var(--dsw-shadow-lv1, 0 8px 30px rgba(0,0,0,.4))',
+  }
+
+  if (hidden) {
+    return createElement(
+      'button',
+      {
+        id: 'dsh-ce-status-reopen',
+        style: reopenStyle,
+        onClick: () => { setHidden(false); writeHidden(false) },
+      },
+      '🧊 CE',
+    )
+  }
 
   const panelStyle = {
     position: 'fixed',
@@ -64,10 +115,30 @@ function Panel(): any {
     borderTop: '1px solid var(--dsw-alias-border-l2, #333)',
   }
   const sumStyle = { color: 'var(--dsw-alias-label-tertiary, #999)', whiteSpace: 'pre-wrap' }
+  const closeStyle = {
+    position: 'absolute',
+    top: 6,
+    right: 10,
+    cursor: 'pointer',
+    color: 'var(--dsw-alias-label-tertiary, #999)',
+    border: 'none',
+    background: 'transparent',
+    fontSize: 16,
+    lineHeight: 1,
+  }
 
   return createElement(
     'div',
     { id: 'dsh-ce-status-panel', style: panelStyle },
+    createElement(
+      'button',
+      {
+        'aria-label': 'Close CE status panel',
+        style: closeStyle,
+        onClick: () => { setHidden(true); writeHidden(true) },
+      },
+      '×',
+    ),
     createElement('h3', { style: { margin: '0 0 8px', fontSize: 13 } }, '🧊 CE Status'),
     row('Phase', data.phase),
     row('Calls', data.call_count),

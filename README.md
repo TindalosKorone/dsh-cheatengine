@@ -2,90 +2,76 @@
 
 [English](README.en.md) | **简体中文**
 
-让 DSH Agent 通过 `ce_*` 工具调用 Cheat Engine 做动态调试（进程附加、内存扫描、读写、反汇编、断点、寄存器、指针分析、Lua/AA 脚本等）。
+让 DSH Agent 直接操作 Cheat Engine，做单机游戏动态调试：找数值、找基址、锁定资源、分析写入者等。
+
+> ⚠️ **Token 提示**：本插件会注册大量 `ce_*` 工具，**增加每次请求的 token 消耗**。默认只暴露 `ce_status`、`ce_connect`、`ce_tool_search`，请按需解锁，不要一次性全开。
 
 ## 功能
 
-- CE 动态调试：进程附加、内存扫描/读写、反汇编、断点、寄存器、AOB
-- 游戏调试增强：反作弊检测、模块转储、AOB 生成、变速齿轮、CT 表保存/加载
-- 工程化：会话统计、假设追踪、证据记录、审计/撤销、快照、风险分级
+- 内存扫描 / 过滤 / 读取 / 写入
+- 反汇编、断点、寄存器、找写入者
+- 指针扫描与基址验证
+- 锁定地址（无限资源）
+- AOB 搜索 / 生成、模块转储、变速、CT 表
+- 反作弊 / 保护模块检测
+- 会话统计、假设 / 证据、审计 / 撤销、快照、风险分级
+- 可选悬浮状态面板（右下角，可关闭 / 重新打开）
 
-## 安装
+## 快速开始
 
-### CE 端（Windows）
+### 1. CE 端（Windows）
 
 1. 从 [cheatengine-mcp-tcp-bridge](https://github.com/HollyZoe/cheatengine-mcp-tcp-bridge) 获取 `ce_mcp_bridge.lua` 和 `ce_mcp_tcp_x64.dll`（32 位 CE 用 `x86`）。
 2. 把 DLL 放入 CE 安装目录。
 3. 打开 CE 并**附加目标进程**。
 4. 执行 `ce_mcp_bridge.lua`，看到 `Bridge started on port 17171` 即成功。
 
-也可以让 DSH Agent 调用 `install_ce_bridge` 自动完成第 1-2 步。
+也可以让 Agent 调用 `install_ce_bridge` 自动完成。
 
-### DSH 端
-
-```bash
-git clone https://github.com/TindalosKorone/dsh-cheatengine.git
-# 然后让 DSH agent 调用：
-dev_inject_plugin {"dir": "/绝对路径/dsh-cheatengine"}
-```
-
-**推荐（一行安装）**：
+### 2. DSH 端
 
 ```bash
 dsh plugin add github:TindalosKorone/dsh-cheatengine
 ```
 
-从源码 checkout 使用时，先执行 `node scripts/setup.mjs` 完成依赖链接和自检。
+或本地注入：
 
-如果从外部路径注入时提示找不到 `@deepseek-ai/dsh-tools`，先执行：
-
-```bash
-node scripts/link-deps.mjs
+```
+dev_inject_plugin {"dir": "/绝对路径/dsh-cheatengine"}
 ```
 
-默认连接 `127.0.0.1:17171`，可用 `ce_connect` 覆盖。
+默认连接 `127.0.0.1:17171`，可用 `ce_connect` 修改。
 
-## 工具暴露策略（渐进披露）
+## 怎么用
 
-为避免 30 个工具一次性进入上下文，默认只暴露 3 个常驻工具：
-
-- `ce_status`、`ce_connect`、`ce_tool_search`
-- 其他 `ce_*` 工具通过 `ce_tool_search` 按需解锁，解锁从下一请求生效，会话内保持。
-- 危险工具（写内存/断点/脚本）必须显式解锁。
+1. 先 `ce_status` / `ce_connect` 确认连接。
+2. 用 `ce_tool_search` 搜索并解锁需要的工具。
+3. 常见调试流程可让 Agent 调用 `ce_playbook` / `ce_mission` 获取建议。
 
 完整工具列表与 Agent 使用规范见 [AGENTS.md](AGENTS.md)。
 
-## 本插件不是什么
+## 悬浮面板
 
-| 本插件不是 | 实际是什么 |
-|---|---|
-| 完整的逆向工程框架 | 一个 Cheat Engine 桥接：给 Agent 提供 CE 操作，而不是反编译器/分析器 |
-| 游戏作弊器本身 | 一个用于**授权调试**和内存分析的工具包 |
-| 服务端/数据库 | 一个连接本机 Cheat Engine 的本地 TCP 桥 |
-| 安全绕过 | 一个要求你对目标进程拥有调试权限的工具 |
-| 静态分析套件 | 一个动态调试/内存工具，最好配合 skills/playbook 做逆向 |
-
-## 常见问题
-
-- **桥接连不上？** 确认 CE 已启动、已附加进程，并看到 `Bridge started on port 17171`。
-- **提示找不到 `@deepseek-ai/dsh-tools`？** 先运行 `node scripts/link-deps.mjs`。
-- **工具太多？** 默认只暴露 3 个常驻工具，其余通过 `ce_tool_search` 按需解锁。
-- **推送前检查？** 运行 `node scripts/self-check.mjs`。
+- 默认开启，右下角显示阶段、调用数、扫描数、锁定数、总结。
+- 点 **×** 关闭；关闭后会变成小按钮 **🧊 CE**，点击可重新打开。
+- 面板只读取本地 `/ce-status/api`，本身不消耗 LLM token；但插件工具会。
 
 ## 构建与自检
 
-插件核心是纯 Node，不依赖 bash/pwsh；仓库已包含可直接运行的 `lib/`，clone 后无需构建。
-
-需要从源码编译时：
+仓库自带 `lib/`，clone 后不构建也能直接注入。需要从源码编译时：
 
 ```bash
-# Linux/macOS
-DSH_CHECKOUT=/path/to/dsh-harness bash scripts/build.sh
-# 或跨平台（Windows PowerShell 也可用）
-npm run build
+npm run build:all   # 编译 host + client
+npm run typecheck
+node scripts/self-check.mjs
+node --test test/tools.test.mjs
 ```
 
-推送前可运行 `node scripts/self-check.mjs` 做本地自检。
+## 安全
+
+- 只用于你有权限的单机 / 调试环境。
+- 危险工具会修改内存或执行脚本，解锁前三思。
+- 默认仅连接本机 `127.0.0.1:17171`，不要用于远程 / 不信任网络。
 
 ## 链接
 

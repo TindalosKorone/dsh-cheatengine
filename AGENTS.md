@@ -6,6 +6,12 @@
 
 一个 Cheat Engine 桥接插件：让你通过 `ce_*` 工具远程控制 Windows 上的 Cheat Engine，进行进程附加、内存扫描/读写、反汇编、断点、寄存器查看、Lua/AA 脚本等动态调试。
 
+## 注意：Token 消耗
+
+- 本插件会向模型目录注册大量 `ce_*` 工具，**增加每次请求的 token 消耗**。
+- 默认只暴露 `ce_status`、`ce_connect`、`ce_tool_search`；请按需解锁，不要一次性全开。
+- 解锁越多工具，后续请求的上下文越大；长时间调试时留意预算。
+
 ## 使用流程（必须遵守）
 
 1. **先连接**：调用 `ce_status` 检查桥接；未连接时调用 `ce_connect`。
@@ -25,7 +31,7 @@
 - 锁定/冻结：`ce_lock_address`, `ce_unlock_address`, `ce_write_many`
 - 游戏调试增强：`ce_detect_protection`, `ce_dump_module`, `ce_aob_generate`, `ce_speedhack`, `ce_cheat_table_save`, `ce_cheat_table_load`
 - 工程化：`ce_session_stats`, `ce_budget_status`, `ce_cache_status`, `ce_forget`, `ce_hypothesis`, `ce_evidence`, `ce_playbook`, `ce_audit_log`, `ce_undo_last`, `ce_snapshot_save`, `ce_snapshot_load`, `ce_risk_levels`
-- 任务/解释/报告：`ce_mission`, `ce_explain_scan_result`, `ce_status_report`
+- 任务/解释/报告：`ce_mission`, `ce_explain_scan_result`, `ce_status_report`, `ce_analyst`
 - 危险（解锁前三思）：`ce_write_integer`, `ce_write_memory`, `ce_write_string`, `ce_execute_lua`, `ce_auto_assemble`, `install_ce_bridge`
 
 
@@ -63,9 +69,12 @@
 | `ce_get_breakpoint_hits` | 命中记录 | `limit` 默认 100 | 用 `offset` / `filter` |
 
 **原则**：`ce_scan` 只给数量，不要等它返回地址；地址类工具都有分页或上限，不会一次性灌爆上下文。
-| 任务入口 | `ce_mission` |
-| 解释扫描结果 | `ce_explain_scan_result` |
-| 人类可读报告 | `ce_status_report` |
+
+- 任务入口：`ce_mission`
+- 解释扫描结果：`ce_explain_scan_result`
+- 人类可读报告：`ce_status_report`
+- 调试总结：`ce_analyst`
+
 ## 安全
 
 - 危险工具会修改目标进程内存或执行脚本，**仅在用户明确要求且你有权限时使用**。
