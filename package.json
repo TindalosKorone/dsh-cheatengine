@@ -1,6 +1,6 @@
 {
   "name": "@tindalosko/dsh-cheatengine",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Official hybrid DSH plugin: Cheat Engine dynamic debugging toolkit with host ce_* tools and a client floating status panel.",
   "type": "module",
   "main": "./lib/index.js",
