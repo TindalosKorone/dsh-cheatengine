@@ -84,9 +84,15 @@ const session = {
   undoStack: [] as any[],
   summary: '',
   evidence: [] as any[],
+  recentEvents: [] as any[],
 }
 
 let snapshot: any = null
+
+function pushRecentEvent(text: string): void {
+  session.recentEvents.push({ text, ts: Date.now() })
+  if (session.recentEvents.length > 5) session.recentEvents.shift()
+}
 
 function updateSession(toolName: string, args: any, result: any): void {
   session.calls.push({
@@ -120,6 +126,63 @@ function updateSession(toolName: string, args: any, result: any): void {
   } else if (toolName === 'ce_unlock_address' && result && result.success !== false) {
     session.locks.delete(String(args.address))
   }
+
+  // L0: automatic one-line summary + capped recent events
+  const ok = !(result && result.success === false)
+  if (!ok) {
+    session.summary = `最近操作失败：${String(result?.error || 'unknown')}`
+    pushRecentEvent(`失败 ${toolName}: ${String(result?.error || 'unknown')}`)
+    return
+  }
+
+  let summary = ''
+  let event = ''
+  if (toolName === 'ce_scan') {
+    summary = `候选 ${result.count}`
+    event = `扫描 ${args.value} → ${result.count} 候选`
+  } else if (toolName === 'ce_next_scan') {
+    summary = `候选 ${result.count}`
+    event = `过滤 ${args.value} → ${result.count} 候选`
+  } else if (toolName === 'ce_scan_many') {
+    const last = Array.isArray(result.results) ? result.results[result.results.length - 1] : null
+    summary = `候选 ${last?.count ?? 0}`
+    event = `批量扫描完成，最后候选 ${last?.count ?? 0}`
+  } else if (toolName === 'ce_get_scan_results') {
+    summary = `候选 ${result.total ?? result.returned ?? 0}`
+    event = `读取扫描结果 ${result.returned ?? 0} 条`
+  } else if (toolName === 'ce_write_integer') {
+    summary = `已写入 ${args.address} = ${args.value}`
+    event = `写入 ${args.address} = ${args.value}`
+  } else if (toolName === 'ce_memory_write') {
+    const mode = args.mode || 'integer'
+    const target = mode === 'many' ? `${Array.isArray(args.addresses) ? args.addresses.length : 0} 个地址` : String(args.address || '')
+    summary = `已写入 ${target}`
+    event = `内存写入 ${target}（${mode}）`
+  } else if (toolName === 'ce_lock_address') {
+    summary = `已锁定 ${args.address}`
+    event = `锁定 ${args.address} = ${args.value}`
+  } else if (toolName === 'ce_unlock_address') {
+    summary = `已解锁 ${args.address}`
+    event = `解锁 ${args.address}`
+  } else if (toolName === 'ce_find_what_writes') {
+    const hit = result?.hit
+    summary = `找到写入者 ${hit?.instruction || hit?.registers?.RIP || ''}`
+    event = `找写入者 ${args.address}`
+  } else if (toolName === 'ce_pointer_scan') {
+    summary = `指针扫描 ${result.count} 条链`
+    event = `指针扫描 ${args.address} → ${result.count} 条链`
+  } else if (toolName === 'ce_detect_protection') {
+    summary = `保护检测：${result.risk}`
+    event = `保护检测 → ${result.risk}`
+  } else if (toolName === 'ce_attach') {
+    summary = `已附加 ${args.process_id_or_name}`
+    event = `附加 ${args.process_id_or_name}`
+  } else if (toolName === 'ce_connect') {
+    summary = '已连接 CE 桥接'
+    event = '连接 CE 桥接'
+  }
+  if (summary) session.summary = summary
+  if (event) pushRecentEvent(event)
 }
 /** Always-visible tools: connection status + on-demand discovery + guide. */
 const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search', 'ce_playbook', 'ce_mission'])
@@ -1983,6 +2046,7 @@ function buildStats(): any {
     summary: session.summary,
     elapsed_seconds: Math.round((Date.now() - session.startTime) / 1000),
     recent_calls: session.calls.slice(-10).reverse().map((c: any) => ({ tool: c.tool, ok: c.ok })),
+    recent_events: session.recentEvents.slice(-5).reverse(),
   }
 }
 

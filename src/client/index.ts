@@ -21,6 +21,7 @@ interface StatusData {
   scan_count?: number
   locked_addresses?: string[]
   summary?: string
+  recent_events?: Array<{ text: string; ts?: number }>
 }
 
 const STORAGE_KEY = 'dsh-ce-panel-hidden'
@@ -149,6 +150,16 @@ function Panel(): any {
       { style: sumWrapStyle },
       createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, '总结'),
       createElement('div', { style: sumStyle }, data.summary || '暂无总结。运行 ce_analyst 可生成。'),
+      data.recent_events && data.recent_events.length > 0
+        ? createElement(
+            'div',
+            { style: { marginTop: 6, color: 'var(--dsw-alias-label-tertiary, #999)' } },
+            createElement('div', { style: { fontWeight: 600, marginBottom: 2 } }, '最近'),
+            ...data.recent_events.slice(0, 5).map((e) =>
+              createElement('div', { key: e.ts ?? e.text, style: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, `• ${e.text}`),
+            ),
+          )
+        : null,
     ),
   )
 }
