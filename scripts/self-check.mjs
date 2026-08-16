@@ -11,7 +11,7 @@
  * Usage:
  *   node scripts/self-check.mjs
  */
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -105,7 +105,13 @@ if (existsSync(lib)) {
 
 // 3. key tools present
 if (existsSync(lib)) {
-  const src = readFileSync(lib, 'utf8')
+  const toolsDir = join(root, 'lib', 'tools')
+  const src = existsSync(toolsDir)
+    ? readdirSync(toolsDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.js') && !entry.name.endsWith('.map'))
+        .map((entry) => readFileSync(join(toolsDir, entry.name), 'utf8'))
+        .join('\n')
+    : readFileSync(lib, 'utf8')
   for (const tool of requiredTools) {
     check(`tool ${tool}`, src.includes(`name: '${tool}'`))
   }
