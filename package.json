@@ -2,13 +2,14 @@
   "name": "@dsh-external/dsh-cheatengine",
   "version": "0.5.1",
   "description": "Official hybrid DSH plugin: Cheat Engine dynamic debugging toolkit with host ce_* tools and a client floating status panel.",
-  "private": true,
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
   "files": [
     "lib",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "AGENTS.md",
+    "docs/agent-tool-reference.md"
   ],
   "license": "MIT",
   "keywords": [
@@ -31,6 +32,17 @@
       "default": "./lib/client.js"
     },
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TindalosKorone/dsh-cheatengine.git"
+  },
+  "homepage": "https://github.com/TindalosKorone/dsh-cheatengine#readme",
+  "bugs": {
+    "url": "https://github.com/TindalosKorone/dsh-cheatengine/issues"
   },
   "dsh": {
     "bundle": {
@@ -61,6 +73,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "node scripts/build.mjs --noEmit",
     "build:client": "npm exec --yes --package tsdown@0.22.14 -- tsdown",
-    "build:all": "npm run build && npm run build:client"
+    "build:all": "npm run build && npm run build:client",
+    "prepublishOnly": "node scripts/self-check.mjs"
   }
 }
