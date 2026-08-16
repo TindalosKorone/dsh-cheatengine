@@ -89,6 +89,22 @@ const session = {
 
 let snapshot: any = null
 
+/** Capacity caps for unbounded session collections (P0 hardening). */
+const MAX_UNDO = 100
+const MAX_EVIDENCE = 200
+const MAX_HYPOTHESES = 100
+const MAX_AUDIT = 200
+
+function pushCapped<T>(arr: T[], item: T, cap: number): void {
+  arr.push(item)
+  if (arr.length > cap) arr.shift()
+}
+
+function pushUndo(item: any): void { pushCapped(session.undoStack, item, MAX_UNDO) }
+function pushEvidence(item: any): void { pushCapped(session.evidence, item, MAX_EVIDENCE) }
+function pushHypothesis(item: any): void { pushCapped(session.hypotheses, item, MAX_HYPOTHESES) }
+function pushAudit(item: any): void { pushCapped(session.audit, item, MAX_AUDIT) }
+
 function pushRecentEvent(text: string): void {
   session.recentEvents.push({ text, ts: Date.now() })
   if (session.recentEvents.length > 5) session.recentEvents.shift()
@@ -216,7 +232,6 @@ const TOOL_PACKS: Record<string, string[]> = {
     'ce_detect_protection', 'ce_dump_module', 'ce_aob_generate', 'ce_speedhack', 'ce_cheat_table_save', 'ce_cheat_table_load',
     'ce_session', 'ce_cache_status', 'ce_forget', 'ce_hypothesis', 'ce_evidence',
     'ce_audit_log', 'ce_undo_last', 'ce_snapshot_save', 'ce_snapshot_load', 'ce_risk_levels',
-    'ce_execute_lua', 'ce_auto_assemble', 'install_ce_bridge',
     'ce_playbook', 'ce_mission', 'ce_explain_scan_result',
   ],
 }
@@ -428,7 +443,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
         const res = await client.sendCommand('write_integer', { address, value: Number(args.value), type })
         if (res && res.success !== false) {
-          session.undoStack.push({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
+          pushUndo({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
         }
         return res
       },
@@ -450,7 +465,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const before = readRes && readRes.success !== false && Array.isArray(readRes.bytes) ? readRes.bytes : null
         const res = await client.sendCommand('write_memory', { address, bytes })
         if (res && res.success !== false) {
-          session.undoStack.push({ kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
+          pushUndo({ kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
         }
         return res
       },
@@ -475,7 +490,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const before = readRes && readRes.success !== false ? readRes.value : null
         const res = await client.sendCommand('write_string', { address, value, wide })
         if (res && res.success !== false) {
-          session.undoStack.push({ kind: 'write_string', address, before, after: value, wide, ts: Date.now() })
+          pushUndo({ kind: 'write_string', address, before, after: value, wide, ts: Date.now() })
         }
         return res
       },
@@ -735,7 +750,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         if (String(res.result || '').trim() !== 'locked') {
           return { success: false, error: `lock failed: ${String(res.result || res.error || 'unknown')}`, error_class: 'LOCK_FAILED' }
         }
-        session.undoStack.push({ kind: 'lock', address, value, type, ts: Date.now() })
+        pushUndo({ kind: 'lock', address, value, type, ts: Date.now() })
         return { success: true, address, value, type, interval_ms: interval, lua_result: res }
       },
     },
@@ -853,10 +868,12 @@ export function createToolDefs(client: CEClient): ToolDef[] {
       parameters: {
         ce_dir: { type: 'string', description: 'Cheat Engine 安装目录，如 D:\\Game\\Cheat Engine 7.6；缺省自动探测常见路径' },
         source_dir: { type: 'string', required: true, description: '桥接文件所在目录（含 ce_mcp_bridge.lua 和 ce_mcp_tcp_*.dll）' },
+        write_autorun: { type: 'boolean', description: '是否写入 autorun 自动启动脚本，默认 true' },
       },
       async execute(args: any) {
         const sourceDir = String(args.source_dir || '').trim()
         if (!sourceDir) return { success: false, error: 'source_dir is required', error_class: 'INVALID_ARGS' }
+        const writeAutorun = args.write_autorun !== false
         let ceDir = String(args.ce_dir || '').trim()
         if (!ceDir) {
           const candidates = [
@@ -875,6 +892,12 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           }
         }
         if (!ceDir) return { success: false, error: 'ce_dir is required (auto-detect failed)', error_class: 'CE_DIR_NOT_FOUND' }
+        // P1 hardening: only install into a directory that looks like Cheat Engine.
+        const ceEntries = await fs.readdir(ceDir).catch(() => [] as string[])
+        const hasCeExe = ceEntries.some((name) => /^cheatengine.*\.exe$/i.test(name))
+        if (!hasCeExe) {
+          return { success: false, error: `ce_dir does not look like a Cheat Engine directory (no cheatengine*.exe): ${ceDir}`, error_class: 'CE_DIR_NOT_FOUND' }
+        }
         const files = ['ce_mcp_bridge.lua', 'ce_mcp_tcp_x64.dll', 'ce_mcp_tcp_x86.dll']
         const copied: string[] = []
         for (const f of files) {
@@ -887,13 +910,15 @@ export function createToolDefs(client: CEClient): ToolDef[] {
             return { success: false, error: `copy ${f} failed: ${String((err && err.message) || err)}`, copied }
           }
         }
-        const autorunDir = path.join(ceDir, 'autorun')
-        await fs.mkdir(autorunDir, { recursive: true })
-        const autorunScript = `loadfile("${ceDir.replace(/\\/g, '\\\\')}\\\\ce_mcp_bridge.lua")()` + '\n'
-        const autorunPath = path.join(autorunDir, 'start_mcp_bridge.lua')
-        await fs.writeFile(autorunPath, autorunScript, 'utf8')
-        copied.push(autorunPath)
-        return { success: true, copied, ce_dir: ceDir }
+        if (writeAutorun) {
+          const autorunDir = path.join(ceDir, 'autorun')
+          await fs.mkdir(autorunDir, { recursive: true })
+          const autorunScript = `loadfile("${ceDir.replace(/\\/g, '\\\\')}\\\\ce_mcp_bridge.lua")()` + '\n'
+          const autorunPath = path.join(autorunDir, 'start_mcp_bridge.lua')
+          await fs.writeFile(autorunPath, autorunScript, 'utf8')
+          copied.push(autorunPath)
+        }
+        return { success: true, copied, ce_dir: ceDir, write_autorun: writeAutorun }
       },
     },
     {
@@ -1020,7 +1045,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const res = await client.sendCommand('write_integer', { address: addresses[i], value: values[i], type })
           results.push({ address: addresses[i], value: values[i], success: !!(res && res.success !== false) })
           if (res && res.success !== false) {
-            session.undoStack.push({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
+            pushUndo({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
           }
         }
         return { success: true, type, results, truncated }
@@ -1114,7 +1139,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const statement = String(args.statement || '').trim()
           if (!statement) return { success: false, error: 'statement is required for add', error_class: 'INVALID_ARGS' }
           const id = args.id || `H${session.hypotheses.length + 1}`
-          session.hypotheses.push({ id, statement, result: args.result || null, ts: Date.now() })
+          pushHypothesis({ id, statement, result: args.result || null, ts: Date.now() })
           return { success: true, id, count: session.hypotheses.length }
         }
         const id = args.id ? String(args.id) : null
@@ -1267,7 +1292,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
             tags: Array.isArray(args.tags) ? args.tags : [],
             ts: Date.now(),
           }
-          session.evidence.push(entry)
+          pushEvidence(entry)
           return { success: true, id: entry.id, count: session.evidence.length }
         }
         return { success: true, count: session.evidence.length, entries: session.evidence.slice(-50).reverse() }
@@ -1635,7 +1660,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const beforeRes = await client.sendCommand('read_integer', { address, type })
           const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
           const res = await client.sendCommand('write_integer', { address, value: Number(args.value), type })
-          if (res && res.success !== false) session.undoStack.push({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
+          if (res && res.success !== false) pushUndo({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
           return res
         }
         if (mode === 'memory') {
@@ -1645,7 +1670,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const readRes = await client.sendCommand('read_memory', { address, size: bytes.length })
           const before = readRes && readRes.success !== false && Array.isArray(readRes.bytes) ? readRes.bytes : null
           const res = await client.sendCommand('write_memory', { address, bytes })
-          if (res && res.success !== false) session.undoStack.push({ kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
+          if (res && res.success !== false) pushUndo({ kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
           return res
         }
         if (mode === 'string') {
@@ -1657,7 +1682,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const readRes = await client.sendCommand('read_string', { address, max_length: maxLen, encoding: wide ? 'utf16le' : 'utf8' })
           const before = readRes && readRes.success !== false ? readRes.value : null
           const res = await client.sendCommand('write_string', { address, value: text, wide })
-          if (res && res.success !== false) session.undoStack.push({ kind: 'write_string', address, before, after: text, wide, ts: Date.now() })
+          if (res && res.success !== false) pushUndo({ kind: 'write_string', address, before, after: text, wide, ts: Date.now() })
           return res
         }
         if (mode === 'many') {
@@ -1676,7 +1701,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
             const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
             const res = await client.sendCommand('write_integer', { address: addresses[i], value: values[i], type })
             results.push({ address: addresses[i], value: values[i], success: !!(res && res.success !== false) })
-            if (res && res.success !== false) session.undoStack.push({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
+            if (res && res.success !== false) pushUndo({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
           }
           return { success: true, type, results, truncated }
         }
@@ -1817,7 +1842,7 @@ function recordAutoEvidence(toolName: string, args: any, result: any): void {
   if (entry) {
     entry.id = `E${session.evidence.length + 1}`
     entry.ts = Date.now()
-    session.evidence.push(entry)
+    pushEvidence(entry)
     if (session.evidence.length > 200) session.evidence.shift()
   }
 }
@@ -1917,7 +1942,7 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
           const res = withErrorClass(await def.execute(args, client))
           updateSession(def.name, args, res)
           recordAutoEvidence(def.name, args, res)
-          if (def.dangerous && res && res.success !== false) session.audit.push({ tool: def.name, args, ts: Date.now() })
+          if (def.dangerous && res && res.success !== false) pushAudit({ tool: def.name, args, ts: Date.now() })
           return res
         }
         const params = def.mapParams ? def.mapParams(args) : args
@@ -1926,7 +1951,7 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
         const wrapped = withErrorClass(mapped)
         updateSession(def.name, args, wrapped)
         recordAutoEvidence(def.name, args, wrapped)
-        if (def.dangerous && wrapped && wrapped.success !== false) session.audit.push({ tool: def.name, args, ts: Date.now() })
+        if (def.dangerous && wrapped && wrapped.success !== false) pushAudit({ tool: def.name, args, ts: Date.now() })
         return wrapped
       } catch (err: any) {
         return {

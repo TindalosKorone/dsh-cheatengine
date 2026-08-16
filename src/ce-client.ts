@@ -78,11 +78,11 @@ export class CEClient {
       socket.setKeepAlive(true)
       socket.on('data', (chunk: Buffer) => this.onData(chunk))
       socket.on('close', () => {
-        this.socket = null
+        if (this.socket === socket) this.socket = null
         this.failPending(new Error('CE bridge connection closed'))
       })
       socket.on('error', (err: Error) => {
-        this.socket = null
+        if (this.socket === socket) this.socket = null
         fail(err)
       })
       socket.on('connect', () => {
