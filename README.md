@@ -1,0 +1,78 @@
+# @dsh-external/dsh-cheatengine
+
+Cheat Engine bridge toolkit：让 DSH Agent 通过 `ce_*` 工具调用 Cheat Engine 进行动态调试（附加进程、内存扫描、读写/冻结、反汇编、断点、寄存器、Lua 脚本等）。
+
+## 架构
+
+```
+┌─────────────────────────────┐      TCP 长度前缀帧 (JSON-RPC 2.0)      ┌────────────────────────────┐
+│ Cheat Engine (Windows)      │ ◄──────────────────────────────────────► │ DSH (Node.js 插件)          │
+│  ce_mcp_bridge.lua          │       uint32 LE len + JSON body          │  CEClient + ce_* 工具        │
+│  + ce_mcp_tcp_x64.dll       │      默认 127.0.0.1:17171               │  ctx.tools.register          │
+└─────────────────────────────┘                                          └────────────────────────────┘
+```
+
+- CE 端桥接基于 [HollyZoe/cheatengine-mcp-tcp-bridge](https://github.com/HollyZoe/cheatengine-mcp-tcp-bridge)（`ce_mcp_bridge.lua` + 原生 TCP DLL）。
+- DSH 端插件是纯 Node.js TCP client，不依赖 Python MCP Server，直接说 CE bridge 的 JSON-RPC 协议。
+
+## 工具列表（29 个）
+
+| 类别 | 工具 |
+|---|---|
+| 连接/状态 | `ce_status`, `ce_connect` |
+| 进程/模块 | `ce_list_processes`, `ce_attach`, `ce_process_info`, `ce_enum_modules` |
+| 扫描/搜索 | `ce_scan`, `ce_next_scan`, `ce_get_scan_results`, `ce_aob_scan`, `ce_search_string` |
+| 内存读取 | `ce_read_memory`, `ce_read_integer`, `ce_read_string`, `ce_read_pointer_chain` |
+| 内存写入（危险） | `ce_write_integer`, `ce_write_memory`, `ce_write_string` |
+| 反汇编/分析 | `ce_disassemble`, `ce_get_instruction_info` |
+| 断点/调试（危险） | `ce_set_breakpoint`, `ce_set_data_breakpoint`, `ce_list_breakpoints`, `ce_remove_breakpoint`, `ce_get_breakpoint_hits`, `ce_clear_breakpoints`, `ce_get_registers` |
+| 高级脚本（危险） | `ce_execute_lua`, `ce_auto_assemble` |
+
+## 部署
+
+### 1. CE 端（Windows）
+
+1. 下载/克隆 [cheatengine-mcp-tcp-bridge](https://github.com/HollyZoe/cheatengine-mcp-tcp-bridge)。
+2. 把 `MCP_Server/ce_mcp_tcp_x64.dll`（64 位 CE）或 `ce_mcp_tcp_x86.dll`（32 位 CE）复制到 Cheat Engine 安装目录。
+3. 打开 Cheat Engine，**先附加到目标进程**。
+4. `File → Execute Script`，打开并执行 `MCP_Server/ce_mcp_bridge.lua`。
+5. 看到 `Bridge started on port 17171` 即成功。
+
+> 也可通过 Lua 控制台执行：`dofile([[C:\path\to\ce_mcp_bridge.lua]])`。
+
+### 2. DSH 端
+
+已注入当前环境后，插件会注册 `ce_*` 工具。默认连接 `127.0.0.1:17171`，可通过插件配置或 `ce_connect` 覆盖。
+
+## 安全提示
+
+- `ce_write_*`、`ce_set_*breakpoint`、`ce_execute_lua`、`ce_auto_assemble` 属于**危险操作**，工具描述已标注。
+- CE bridge 的 TCP 端口默认**无认证/无加密**，请勿暴露到公网或不可信网络。
+- 仅在你有权限调试的目标进程上使用。
+
+## 开发与构建
+
+当前 `lib/` 是可直接运行的 JS 产物（本环境无 DSH checkout/tsc 时的手写构建）。源码在 `src/`（TypeScript）。
+
+在有 DSH checkout 的环境中：
+
+```bash
+DSH_CHECKOUT=/path/to/dsh-harness bash scripts/build.sh
+# 注入器环境内
+dev_build_plugin {"dir": "/root/dsh-cheatengine"}
+dev_inject_plugin {"dir": "/root/dsh-cheatengine"}
+```
+
+在没有 DSH checkout 的环境中，`build.sh` 会自动检测到 `lib/` 已存在并跳过编译，`dev_build_plugin` 仍可完成打包：
+
+```bash
+dev_build_plugin {"dir": "/root/dsh-cheatengine"}
+# 产物：dsh-external-dsh-cheatengine-0.0.1.tgz
+```
+
+插件运行时依赖 `@deepseek-ai/dsh-tools`，在无 checkout 环境需手动链接：
+
+```bash
+mkdir -p node_modules/@deepseek-ai
+ln -s /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools node_modules/@deepseek-ai/dsh-tools
+```
