@@ -35,6 +35,14 @@ You can also ask the DSH agent to call `install_ce_bridge` to automate steps 1â€
 
 ### 2. DSH side
 
+Install from npm (recommended):
+
+```bash
+dsh plugin add @tindalosko/dsh-cheatengine
+```
+
+Or install from GitHub:
+
 ```bash
 dsh plugin add github:TindalosKorone/dsh-cheatengine
 ```

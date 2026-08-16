@@ -35,6 +35,14 @@
 
 ### 2. DSH 端
 
+推荐从 npm 安装：
+
+```bash
+dsh plugin add @tindalosko/dsh-cheatengine
+```
+
+或从 GitHub 安装：
+
 ```bash
 dsh plugin add github:TindalosKorone/dsh-cheatengine
 ```
