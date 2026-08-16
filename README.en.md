@@ -49,11 +49,21 @@ See [AGENTS.md](AGENTS.md) for the full tool list and agent-facing conventions.
 | A security bypass | A tool that requires you to have permission to debug the target process |
 | A static analysis suite | A dynamic debugging/memory tool, best combined with skills/playbooks for RE |
 
+## FAQ
+
+- **Bridge won't connect?** Make sure CE is running, the target process is attached, and you see `Bridge started on port 17171`.
+- **`@deepseek-ai/dsh-tools` not found?** Run `node scripts/link-deps.mjs` first.
+- **Too many tools?** Only 3 resident tools are exposed by default; unlock the rest via `ce_tool_search`.
+- **Before pushing?** Run `node scripts/self-check.mjs`.
+
 ## Build & self-check
 
 The repo ships a ready-to-run `lib/`, so cloning is enough. To build from source:
 
 ```bash
+# Linux/macOS
+DSH_CHECKOUT=/path/to/dsh-harness bash scripts/build.sh
+# or cross-platform (Windows PowerShell works too)
 npm run build
 ```
 
