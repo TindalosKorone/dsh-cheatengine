@@ -31,6 +31,8 @@ const requiredTools = [
   'ce_cache_status',
   'ce_forget',
   'ce_hypothesis',
+  'ce_evidence',
+  'ce_playbook',
   'ce_audit_log',
   'ce_undo_last',
   'ce_snapshot_save',
@@ -66,6 +68,10 @@ if (existsSync(lib)) {
 // 4. dependency link
 const depLink = join(root, 'node_modules', '@deepseek-ai', 'dsh-tools')
 check('dsh-tools link exists', existsSync(depLink), depLink)
+
+// 5. bundle manifest
+const patch = join(root, 'cordis.patch.yml')
+check('cordis.patch.yml exists', existsSync(patch), patch)
 
 console.log(failed ? '\nSELF-CHECK FAILED' : '\nSELF-CHECK PASSED')
 process.exit(failed ? 1 : 0)

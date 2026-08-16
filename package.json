@@ -7,9 +7,25 @@
   "main": "./lib/index.js",
   "types": "./lib/types/index.d.ts",
   "files": [
-    "lib"
+    "lib",
+    "cordis.patch.yml"
   ],
   "license": "BSD-3-Clause",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "cheat-engine",
+    "debugging",
+    "reverse-engineering",
+    "memory-scanner",
+    "game-hacking"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "peerDependencies": {
     "@deepseek-ai/dsh-llm": ">=0.0.1-rc <2",
     "@deepseek-ai/dsh-tools": ">=0.0.1-rc <2",

@@ -81,6 +81,7 @@ const session = {
   audit: [] as any[],
   hypotheses: [] as any[],
   undoStack: [] as any[],
+  evidence: [] as any[],
 }
 
 let snapshot: any = null
@@ -670,17 +671,34 @@ function createToolDefs(client: CEClient): ToolDef[] {
     },
     {
       name: 'install_ce_bridge',
-      description: '一键安装 CE 桥接：把 ce_mcp_bridge.lua 和 ce_mcp_tcp_x64/x86.dll 复制到 CE 目录，并写入 autorun 自动启动脚本',
+      description: '一键安装 CE 桥接：自动探测或指定 CE 目录，复制 ce_mcp_bridge.lua 和 ce_mcp_tcp_x64/x86.dll，并写入 autorun 自动启动脚本',
       method: 'install_ce_bridge',
       dangerous: true,
       parameters: {
-        ce_dir: { type: 'string', required: true, description: 'Cheat Engine 安装目录，如 D:\\Game\\Cheat Engine 7.6' },
+        ce_dir: { type: 'string', description: 'Cheat Engine 安装目录，如 D:\\Game\\Cheat Engine 7.6；缺省自动探测常见路径' },
         source_dir: { type: 'string', required: true, description: '桥接文件所在目录（含 ce_mcp_bridge.lua 和 ce_mcp_tcp_*.dll）' },
       },
       async execute(args: any) {
-        const ceDir = String(args.ce_dir || '').trim()
         const sourceDir = String(args.source_dir || '').trim()
-        if (!ceDir || !sourceDir) return { success: false, error: 'ce_dir and source_dir are required' }
+        if (!sourceDir) return { success: false, error: 'source_dir is required', error_class: 'INVALID_ARGS' }
+        let ceDir = String(args.ce_dir || '').trim()
+        if (!ceDir) {
+          const candidates = [
+            process.env.PROGRAMFILES ? path.join(process.env.PROGRAMFILES, 'Cheat Engine') : '',
+            process.env['PROGRAMFILES(X86)'] ? path.join(process.env['PROGRAMFILES(X86)'], 'Cheat Engine') : '',
+            'D:\\Game\\Cheat Engine 7.6',
+            'D:\\Cheat Engine',
+            'C:\\Cheat Engine',
+          ].filter(Boolean)
+          for (const c of candidates) {
+            try {
+              await fs.access(c)
+              ceDir = c
+              break
+            } catch { /* keep looking */ }
+          }
+        }
+        if (!ceDir) return { success: false, error: 'ce_dir is required (auto-detect failed)', error_class: 'CE_DIR_NOT_FOUND' }
         const files = ['ce_mcp_bridge.lua', 'ce_mcp_tcp_x64.dll', 'ce_mcp_tcp_x86.dll']
         const copied: string[] = []
         for (const f of files) {
@@ -699,7 +717,7 @@ function createToolDefs(client: CEClient): ToolDef[] {
         const autorunPath = path.join(autorunDir, 'start_mcp_bridge.lua')
         await fs.writeFile(autorunPath, autorunScript, 'utf8')
         copied.push(autorunPath)
-        return { success: true, copied }
+        return { success: true, copied, ce_dir: ceDir }
       },
     },
     {
@@ -947,6 +965,96 @@ function createToolDefs(client: CEClient): ToolDef[] {
           return { success: !(res && res.success === false), undone: 'ce_write_integer', address: last.address, restored: last.before }
         }
         return { success: false, error: `cannot undo ${last.kind} automatically`, error_class: 'UNDO_NOT_SUPPORTED' }
+      },
+    },
+    {
+      name: 'ce_playbook',
+      description: '返回针对常见调试任务的推荐方法论（建议而非强制，Agent 可自行组合工具）',
+      method: 'ce_playbook',
+      parameters: {
+        task: { type: 'string', description: 'overview|find_value|find_base|lock_value|verify_address，默认 overview' },
+        engine: { type: 'string', description: '可选：unity|ue|godot|unknown，用于给引擎相关建议' },
+      },
+      async execute(args: any) {
+        const task = args.task || 'overview'
+        const engine = args.engine || ''
+        const playbooks: Record<string, any> = {
+          overview: {
+            summary: '先确认环境，再根据目标选择路线。',
+            phases: [
+              { name: '环境确认', tools: ['ce_status', 'ce_connect', 'ce_process_info', 'ce_detect_engine'], note: '确认 CE 已附加目标进程' },
+              { name: '选择路线', tools: ['ce_playbook'], note: '根据任务类型选择 find_value / find_base / lock_value' },
+            ],
+          },
+          find_value: {
+            summary: '定位一个会变化的内存数值。',
+            phases: [
+              { name: '初次扫描', tools: ['ce_scan'], decision: '如果候选过多，尝试 float/double/word/qword', stop_condition: '三种类型都为 0 → 停止，可能不是普通内存数值' },
+              { name: '过滤变化', tools: ['ce_next_scan'], decision: '使用 exact / increased / decreased / changed', stop_condition: '候选为 1 → 进入验证' },
+              { name: '验证', tools: ['ce_read_integer', 'ce_write_integer'], decision: '直接写入是否生效？不生效找写入者', stop_condition: '写入不生效 → ce_find_what_writes' },
+              { name: '稳定化', tools: ['ce_pointer_scan', 'ce_lock_address'], note: '需要稳定地址再做指针扫描' },
+            ],
+          },
+          find_base: {
+            summary: '从动态地址向上找稳定基址/指针链。',
+            phases: [
+              { name: '定位当前地址', tools: ['ce_scan', 'ce_next_scan', 'ce_find_what_writes'], note: '先拿到一个可用的动态地址' },
+              { name: '指针扫描', tools: ['ce_pointer_scan'], decision: '从目标地址向上找指针链', stop_condition: '5 层内无静态指针 → 大概率没有稳定基址' },
+              { name: '验证链', tools: ['ce_read_pointer_chain', 'ce_write_integer'], note: '用链读取/写入验证' },
+            ],
+          },
+          lock_value: {
+            summary: '把某个地址锁定为指定值。',
+            phases: [
+              { name: '确认地址', tools: ['ce_read_integer'], note: '确认地址当前值' },
+              { name: '锁定', tools: ['ce_lock_address'], note: '设置锁定值和间隔' },
+              { name: '验证', tools: ['ce_read_integer', 'ce_session_stats'], note: '确认锁定后值不变' },
+            ],
+          },
+          verify_address: {
+            summary: '验证一个地址是否真实控制目标数值。',
+            phases: [
+              { name: '读取', tools: ['ce_read_integer'], note: '确认地址值' },
+              { name: '写入测试', tools: ['ce_write_integer'], decision: '游戏显示是否变化？', stop_condition: '没变化 → 可能是显示副本，用 ce_find_what_writes' },
+              { name: '写入断点', tools: ['ce_find_what_writes'], note: '找到真正写入者' },
+            ],
+          },
+        }
+        const pb = playbooks[task] || playbooks.overview
+        if (engine) pb.engine_note = engine === 'unity' ? 'Unity/IL2CPP 优先尝试 float/double，注意 UI 显示副本。' : engine === 'ue' ? 'UE 通常需要指针链，动态堆较多。' : engine === 'godot' ? 'Godot 脚本值可能在 VM 堆中。' : ''
+        return { success: true, task, playbook: pb }
+      },
+    },
+    {
+      name: 'ce_evidence',
+      description: '记录/查看/清除结构化调试证据，形成可追溯的调查链',
+      method: 'ce_evidence',
+      parameters: {
+        action: { type: 'string', description: 'add|list|clear，默认 list' },
+        claim: { type: 'string', description: '结论/主张（add 时需要）' },
+        method: { type: 'string', description: '验证方法，如 ce_scan / ce_write_integer' },
+        result: { type: 'string', description: '证据内容/结果' },
+        tags: { type: 'array', items: { type: 'string' }, description: '标签，如 ["unity","display-copy"]' },
+      },
+      async execute(args: any) {
+        const action = args.action || 'list'
+        if (action === 'clear') {
+          session.evidence = []
+          return { success: true, cleared: true }
+        }
+        if (action === 'add') {
+          const entry = {
+            id: `E${session.evidence.length + 1}`,
+            claim: args.claim || '',
+            method: args.method || '',
+            result: args.result || '',
+            tags: Array.isArray(args.tags) ? args.tags : [],
+            ts: Date.now(),
+          }
+          session.evidence.push(entry)
+          return { success: true, id: entry.id, count: session.evidence.length }
+        }
+        return { success: true, count: session.evidence.length, entries: session.evidence.slice(-50).reverse() }
       },
     },
     // ── 按需解锁（常驻） ──────────────────────────────────────────

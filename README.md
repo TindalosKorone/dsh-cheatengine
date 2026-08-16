@@ -1,5 +1,7 @@
 # @dsh-external/dsh-cheatengine
 
+[English](README.en.md) | **简体中文**
+
 让 DSH Agent 通过 `ce_*` 工具调用 Cheat Engine 做动态调试（进程附加、内存扫描、读写、反汇编、断点、寄存器、Lua/AA 脚本）。
 
 ## 安装
