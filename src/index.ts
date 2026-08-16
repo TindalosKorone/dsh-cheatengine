@@ -1094,7 +1094,7 @@ function createToolDefs(client: CEClient): ToolDef[] {
           `return "OK"`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
-        return { success: true, speed, lua_result: res }
+        return { success: true, speed, status: res && res.result ? res.result : String((res && res.error) || '') }
       },
     },
     {
@@ -1132,7 +1132,7 @@ function createToolDefs(client: CEClient): ToolDef[] {
           `return "DUMPED"`,
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
-        return { success: true, module: mod.name, base: mod.address, size, output, lua_result: res }
+        return { success: true, module: mod.name, base: mod.address, size, output, status: res && res.result ? res.result : String((res && res.error) || '') }
       },
     },
     {
@@ -1145,7 +1145,7 @@ function createToolDefs(client: CEClient): ToolDef[] {
       },
       async execute(args: any, client: any) {
         const address = String(args.address || '').trim()
-        const size = Math.min(Number(args.size) || 32, 1024)
+        const size = Math.min(Number(args.size) || 32, 256)
         if (!address) return { success: false, error: 'address is required', error_class: 'INVALID_ARGS' }
         const lua = [
           `local addr = getAddressSafe("${address}")`,
@@ -1158,7 +1158,7 @@ function createToolDefs(client: CEClient): ToolDef[] {
         ].join('\n')
         const res = await client.sendCommand('evaluate_lua', { code: lua })
         const pattern = typeof res && typeof res.result === 'string' ? res.result : ''
-        return { success: true, address, size, pattern, lua_result: res }
+        return { success: true, address, size, pattern }
       },
     },
     {
