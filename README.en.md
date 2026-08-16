@@ -15,6 +15,7 @@ A DeepSeek Harness (DSH) plugin that lets agents drive Cheat Engine for single-p
 - AOB search / generation, module dump, speedhack, cheat table save/load
 - Anti-cheat / protection module detection
 - Session stats, hypothesis / evidence, audit / undo, snapshot, risk levels
+- Unified memory / session tools (`ce_memory_read`, `ce_memory_write`, `ce_session`); old tool names remain for compatibility
 - Optional floating status panel (bottom-right, closable / reopenable)
 
 ## Quick start
@@ -45,7 +46,7 @@ Default bridge endpoint is `127.0.0.1:17171`; override with `ce_connect`.
 ## Usage
 
 1. Run `ce_status` / `ce_connect` to verify the connection.
-2. Use `ce_tool_search` to find and unlock tools by task pack, e.g. `ce_tool_search({"packs": ["scan", "memory"]})`.
+2. Use `ce_tool_search` to find and unlock tools by task pack, e.g. `ce_tool_search({"packs": ["scan", "memory"]})`; prefer `ce_memory_read` / `ce_memory_write` for memory access.
 3. For common debugging flows, ask the agent to call `ce_playbook` / `ce_mission`.
 
 See [AGENTS.md](AGENTS.md) for the full tool list and agent-facing conventions.

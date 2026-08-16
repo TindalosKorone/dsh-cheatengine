@@ -15,6 +15,7 @@
 - AOB 搜索 / 生成、模块转储、变速、CT 表
 - 反作弊 / 保护模块检测
 - 会话统计、假设 / 证据、审计 / 撤销、快照、风险分级
+- 统一内存读写 / 会话工具（`ce_memory_read`、`ce_memory_write`、`ce_session`），旧工具名保留兼容
 - 可选悬浮状态面板（右下角，可关闭 / 重新打开）
 
 ## 快速开始
@@ -45,7 +46,7 @@ dev_inject_plugin {"dir": "/绝对路径/dsh-cheatengine"}
 ## 怎么用
 
 1. 先 `ce_status` / `ce_connect` 确认连接。
-2. 用 `ce_tool_search` 搜索并按任务包解锁需要的工具，例如 `ce_tool_search({"packs": ["scan", "memory"]})`。
+2. 用 `ce_tool_search` 搜索并按任务包解锁需要的工具，例如 `ce_tool_search({"packs": ["scan", "memory"]})`；内存读写优先使用 `ce_memory_read` / `ce_memory_write`。
 3. 常见调试流程可让 Agent 调用 `ce_playbook` / `ce_mission` 获取建议。
 
 完整工具列表与 Agent 使用规范见 [AGENTS.md](AGENTS.md)。

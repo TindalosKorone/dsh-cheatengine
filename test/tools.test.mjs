@@ -31,6 +31,9 @@ test('required tools exist', () => {
     'ce_analyst',
     'ce_detect_protection',
     'install_ce_bridge',
+    'ce_memory_read',
+    'ce_memory_write',
+    'ce_session',
   ]
   const missing = required.filter((n) => !names.has(n))
   assert.deepEqual(missing, [], `missing tools: ${missing.join(', ')}`)
@@ -43,6 +46,16 @@ test('every tool has a name and description', () => {
     assert.ok(d.description, `tool ${d.name} missing description`)
     assert.ok(d.method || d.execute, `tool ${d.name} missing method/execute`)
   }
+})
+
+test('unified tools are wired', () => {
+  const defs = createToolDefs({})
+  const read = defs.find((d) => d.name === 'ce_memory_read')
+  const write = defs.find((d) => d.name === 'ce_memory_write')
+  const session = defs.find((d) => d.name === 'ce_session')
+  assert.ok(read && typeof read.execute === 'function')
+  assert.ok(write && typeof write.execute === 'function' && write.dangerous)
+  assert.ok(session && typeof session.execute === 'function')
 })
 
 test('ce_tool_search supports task packs', () => {

@@ -24,6 +24,13 @@
 
 ## 可解锁工具
 
+**统一工具（推荐优先使用）**
+- `ce_memory_read`：一个工具读 integer / memory / string / pointer_chain / many
+- `ce_memory_write`：一个工具写 integer / memory / string / many（危险）
+- `ce_session`：一个工具查看 stats / budget / report / analyst
+
+旧版 `ce_read_*`、`ce_write_*`、`ce_session_stats` 等仍保留为兼容，可通过 `toolNames` 精确解锁，但默认搜索/任务包不再展示它们。
+
 - 进程：`ce_list_processes`, `ce_attach`, `ce_process_info`, `ce_enum_modules`, `ce_detect_engine`
 - 扫描：`ce_scan`, `ce_next_scan`, `ce_get_scan_results`, `ce_aob_scan`, `ce_search_string`, `ce_pointer_scan`, `ce_scan_many`
 - 读取：`ce_read_memory`, `ce_read_integer`, `ce_read_string`, `ce_read_pointer_chain`, `ce_read_many`
@@ -43,8 +50,8 @@
 | 确认环境 | `ce_status`, `ce_connect`, `ce_process_info`, `ce_detect_engine` |
 | 扫描数值 | `ce_scan`, `ce_next_scan`, `ce_get_scan_results` |
 | 批量扫描 | `ce_scan_many` |
-| 读取地址 | `ce_read_integer`, `ce_read_memory`, `ce_read_many` |
-| 写入/测试 | `ce_write_integer`, `ce_write_many` |
+| 读取地址 | `ce_memory_read`（mode=integer/memory/string/many） |
+| 写入/测试 | `ce_memory_write`（mode=integer/memory/string/many） |
 | 找写入者 | `ce_find_what_writes` |
 | 找稳定基址 | `ce_pointer_scan` |
 | 锁定值 | `ce_lock_address` / `ce_unlock_address` |
@@ -53,7 +60,7 @@
 | 转储/AOB | `ce_dump_module`, `ce_aob_generate` |
 | 变速 | `ce_speedhack` |
 | 记录假设/证据 | `ce_hypothesis`, `ce_evidence` |
-| 查看会话/预算 | `ce_session_stats`, `ce_budget_status` |
+| 查看会话/预算 | `ce_session`（action=stats/budget） |
 | 撤销/审计 | `ce_undo_last`, `ce_audit_log` |
 
 ## 返回值与上限速查

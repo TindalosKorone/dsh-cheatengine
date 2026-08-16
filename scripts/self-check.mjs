@@ -81,6 +81,9 @@ const requiredTools = [
   'ce_explain_scan_result',
   'ce_status_report',
   'ce_analyst',
+  'ce_memory_read',
+  'ce_memory_write',
+  'ce_session',
   'ce_tool_search',
 ]
 
