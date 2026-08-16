@@ -1834,7 +1834,9 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
     },
     async execute(args: any, exec: any) {
       const s = getSession(exec)
-      const prev = session
+      // Point the module-level session at this agent's session for the duration
+      // of the call. We intentionally do NOT restore the previous value: the web
+      // panel should keep showing the most recently active session.
       session = s
       try {
         if (def.execute) {
@@ -1858,8 +1860,6 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
           error: String((err && err.message) || err),
           error_class: classifyError(err),
         }
-      } finally {
-        session = prev
       }
     },
   })
