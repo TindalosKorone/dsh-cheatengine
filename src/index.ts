@@ -121,9 +121,36 @@ function updateSession(toolName: string, args: any, result: any): void {
     session.locks.delete(String(args.address))
   }
 }
-/** Always-visible tools: connection status + on-demand discovery. */
-const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search'])
+/** Always-visible tools: connection status + on-demand discovery + guide. */
+const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search', 'ce_playbook', 'ce_mission'])
 const isOwnTool = (name: string) => name.startsWith('ce_') || name === 'install_ce_bridge'
+
+/** Task packs: unlock a coherent group of tools with one ce_tool_search call. */
+const TOOL_PACKS: Record<string, string[]> = {
+  process: ['ce_list_processes', 'ce_attach', 'ce_process_info', 'ce_enum_modules', 'ce_detect_engine'],
+  scan: ['ce_scan', 'ce_next_scan', 'ce_get_scan_results', 'ce_aob_scan', 'ce_search_string', 'ce_scan_many'],
+  memory: ['ce_read_memory', 'ce_read_integer', 'ce_read_string', 'ce_read_pointer_chain', 'ce_read_many', 'ce_write_integer', 'ce_write_memory', 'ce_write_string', 'ce_write_many'],
+  debug: ['ce_disassemble', 'ce_get_instruction_info', 'ce_set_breakpoint', 'ce_set_data_breakpoint', 'ce_list_breakpoints', 'ce_remove_breakpoint', 'ce_get_breakpoint_hits', 'ce_clear_breakpoints', 'ce_get_registers', 'ce_find_what_writes'],
+  lock: ['ce_lock_address', 'ce_unlock_address'],
+  analyze: ['ce_detect_protection', 'ce_dump_module', 'ce_aob_generate', 'ce_speedhack', 'ce_cheat_table_save', 'ce_cheat_table_load'],
+  case: ['ce_session_stats', 'ce_budget_status', 'ce_cache_status', 'ce_forget', 'ce_hypothesis', 'ce_evidence', 'ce_audit_log', 'ce_undo_last', 'ce_snapshot_save', 'ce_snapshot_load', 'ce_risk_levels', 'ce_status_report', 'ce_analyst'],
+  script: ['ce_execute_lua', 'ce_auto_assemble', 'install_ce_bridge'],
+  guide: ['ce_playbook', 'ce_mission', 'ce_explain_scan_result'],
+  all: [
+    'ce_list_processes', 'ce_attach', 'ce_process_info', 'ce_enum_modules', 'ce_detect_engine',
+    'ce_scan', 'ce_next_scan', 'ce_get_scan_results', 'ce_aob_scan', 'ce_search_string', 'ce_scan_many',
+    'ce_read_memory', 'ce_read_integer', 'ce_read_string', 'ce_read_pointer_chain', 'ce_read_many',
+    'ce_write_integer', 'ce_write_memory', 'ce_write_string', 'ce_write_many',
+    'ce_disassemble', 'ce_get_instruction_info', 'ce_set_breakpoint', 'ce_set_data_breakpoint', 'ce_list_breakpoints',
+    'ce_remove_breakpoint', 'ce_get_breakpoint_hits', 'ce_clear_breakpoints', 'ce_get_registers', 'ce_find_what_writes',
+    'ce_lock_address', 'ce_unlock_address',
+    'ce_detect_protection', 'ce_dump_module', 'ce_aob_generate', 'ce_speedhack', 'ce_cheat_table_save', 'ce_cheat_table_load',
+    'ce_session_stats', 'ce_budget_status', 'ce_cache_status', 'ce_forget', 'ce_hypothesis', 'ce_evidence',
+    'ce_audit_log', 'ce_undo_last', 'ce_snapshot_save', 'ce_snapshot_load', 'ce_risk_levels', 'ce_status_report', 'ce_analyst',
+    'ce_execute_lua', 'ce_auto_assemble', 'install_ce_bridge',
+    'ce_playbook', 'ce_mission', 'ce_explain_scan_result',
+  ],
+}
 
 interface ToolDef {
   name: string
@@ -1475,14 +1502,16 @@ export function createToolDefs(client: CEClient): ToolDef[] {
     {
       name: 'ce_tool_search',
       description: [
-        '搜索并解锁当前不可见的 ce_* / install_ce_bridge 工具。',
-        '本会话默认只暴露 ce_status、ce_connect、ce_tool_search。需要其他 Cheat Engine 工具时，先调用本工具搜索，再用 toolNames 精确解锁。',
+        '搜索并按任务包解锁当前不可见的 ce_* / install_ce_bridge 工具。',
+        '常驻工具：ce_status、ce_connect、ce_tool_search、ce_playbook、ce_mission。',
+        '可用 packs 一次解锁一组（process/scan/memory/debug/lock/analyze/case/script/guide/all），也可用 toolNames 精确解锁。',
         '危险工具（写内存/断点/脚本）解锁后请谨慎使用。',
       ].join(' '),
       kind: 'search',
       method: 'ce_tool_search',
       parameters: {
         query: { type: 'string', description: '搜索关键词，如 "scan"、"read"、"breakpoint"' },
+        packs: { type: 'array', items: { type: 'string' }, description: '任务包名数组，如 ["scan","memory"]；可用包：process/scan/memory/debug/lock/analyze/case/script/guide/all' },
         toolNames: { type: 'array', items: { type: 'string' }, description: '要解锁的精确工具名数组，如 ["ce_scan"]' },
       },
     },
@@ -1535,6 +1564,9 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
         const unlock = Array.isArray(args.toolNames)
           ? args.toolNames.filter((name: unknown) => typeof name === 'string' && name.length > 0)
           : []
+        const packs: string[] = Array.isArray(args.packs)
+          ? args.packs.filter((name: unknown): name is string => typeof name === 'string' && name.length > 0)
+          : []
         const lines: string[] = []
         let schemas: any[] = []
         try {
@@ -1544,9 +1576,15 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
         }
         const ceSchemas = schemas.filter((schema) => isOwnTool(schema.name))
 
-        if (unlock.length > 0) {
-          const valid = ceSchemas.filter((schema) => unlock.includes(schema.name))
-          const invalid = unlock.filter((name: string) => !ceSchemas.some((schema) => schema.name === name))
+        const packTools = packs.flatMap((pack) => TOOL_PACKS[pack] || [])
+        const unlockNames = Array.from(new Set([...unlock, ...packTools]))
+
+        if (unlockNames.length > 0) {
+          const valid = ceSchemas.filter((schema) => unlockNames.includes(schema.name))
+          const invalid = unlockNames.filter((name: string) => !ceSchemas.some((schema) => schema.name === name))
+          if (packs.length > 0) {
+            lines.push(`任务包：${packs.join(', ')} → ${valid.map((schema) => schema.name).join(', ') || '(无)'}`)
+          }
           lines.push(`将在下一请求解锁：${valid.map((schema) => schema.name).join(', ') || '(无)'}`)
           if (invalid.length > 0) lines.push(`未找到：${invalid.join(', ')}`)
           const dangerous = valid.filter((schema) => (schema.description || '').startsWith('[危险操作'))
@@ -1568,15 +1606,17 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
             const desc = (schema.description || '').split('\n')[0].slice(0, 80)
             lines.push(`- ${schema.name}: ${desc}${(schema.description || '').startsWith('[危险操作') ? ' [危险]' : ''}`)
           }
-          lines.push('解锁：ce_tool_search({"toolNames": ["<精确名称>"]})')
+          lines.push('解锁：ce_tool_search({"toolNames": ["<精确名称>"]}) 或 ce_tool_search({"packs": ["scan"]})')
         }
 
-        if (query.length === 0 && unlock.length === 0) {
-          lines.push('当前常驻：ce_status、ce_connect、ce_tool_search。需要其他 ce_* 工具时，用 query 搜索，再用 toolNames 解锁。')
+        if (query.length === 0 && unlockNames.length === 0) {
+          lines.push('当前常驻：ce_status、ce_connect、ce_tool_search、ce_playbook、ce_mission。')
+          lines.push('可用任务包：process / scan / memory / debug / lock / analyze / case / script / guide / all')
+          lines.push('示例：ce_tool_search({"packs": ["scan", "memory"]})')
           lines.push('危险工具（写内存/断点/脚本）需显式解锁。')
         }
 
-        return { text: lines.join('\n'), unlocked: unlock }
+        return { text: lines.join('\n'), unlocked: unlockNames, packs }
       },
     })
   }
@@ -1641,9 +1681,17 @@ function unlockedFromEvents(session: any): Set<string> {
     } catch {
       continue
     }
-    if (args && typeof args === 'object' && !Array.isArray(args) && Array.isArray(args.toolNames)) {
-      for (const name of args.toolNames) {
-        if (typeof name === 'string' && name.length > 0) unlocked.add(name)
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      if (Array.isArray(args.toolNames)) {
+        for (const name of args.toolNames) {
+          if (typeof name === 'string' && name.length > 0) unlocked.add(name)
+        }
+      }
+      if (Array.isArray(args.packs)) {
+        for (const pack of args.packs) {
+          if (typeof pack !== 'string') continue
+          for (const name of TOOL_PACKS[pack] || []) unlocked.add(name)
+        }
       }
     }
   }

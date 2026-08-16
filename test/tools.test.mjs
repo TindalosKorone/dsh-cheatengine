@@ -45,6 +45,15 @@ test('every tool has a name and description', () => {
   }
 })
 
+test('ce_tool_search supports task packs', () => {
+  const defs = createToolDefs({})
+  const search = defs.find((d) => d.name === 'ce_tool_search')
+  assert.ok(search)
+  assert.ok(search.parameters.packs, 'ce_tool_search should accept packs')
+  assert.ok(search.parameters.toolNames, 'ce_tool_search should accept toolNames')
+  assert.match(search.description, /process|scan|memory|debug|lock|analyze|case|script|guide|all/)
+})
+
 test('parameter caps are applied', async () => {
   const defs = createToolDefs({})
   const byName = (name) => defs.find((d) => d.name === name)

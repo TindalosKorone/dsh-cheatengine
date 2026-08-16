@@ -4,7 +4,7 @@
 
 让 DSH Agent 直接操作 Cheat Engine，做单机游戏动态调试：找数值、找基址、锁定资源、分析写入者等。
 
-> ⚠️ **Token 提示**：本插件会注册大量 `ce_*` 工具，**增加每次请求的 token 消耗**。默认只暴露 `ce_status`、`ce_connect`、`ce_tool_search`，请按需解锁，不要一次性全开。
+> ⚠️ **Token 提示**：本插件会注册大量 `ce_*` 工具，**增加每次请求的 token 消耗**。默认只暴露 `ce_status`、`ce_connect`、`ce_tool_search`、`ce_playbook`、`ce_mission`，请按需解锁，不要一次性全开。
 
 ## 功能
 
@@ -45,7 +45,7 @@ dev_inject_plugin {"dir": "/绝对路径/dsh-cheatengine"}
 ## 怎么用
 
 1. 先 `ce_status` / `ce_connect` 确认连接。
-2. 用 `ce_tool_search` 搜索并解锁需要的工具。
+2. 用 `ce_tool_search` 搜索并按任务包解锁需要的工具，例如 `ce_tool_search({"packs": ["scan", "memory"]})`。
 3. 常见调试流程可让 Agent 调用 `ce_playbook` / `ce_mission` 获取建议。
 
 完整工具列表与 Agent 使用规范见 [AGENTS.md](AGENTS.md)。

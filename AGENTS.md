@@ -9,15 +9,16 @@
 ## 注意：Token 消耗
 
 - 本插件会向模型目录注册大量 `ce_*` 工具，**增加每次请求的 token 消耗**。
-- 默认只暴露 `ce_status`、`ce_connect`、`ce_tool_search`；请按需解锁，不要一次性全开。
+- 默认只暴露 `ce_status`、`ce_connect`、`ce_tool_search`、`ce_playbook`、`ce_mission`；请按需解锁，不要一次性全开。
 - 解锁越多工具，后续请求的上下文越大；长时间调试时留意预算。
 
 ## 使用流程（必须遵守）
 
 1. **先连接**：调用 `ce_status` 检查桥接；未连接时调用 `ce_connect`。
-2. **按需解锁**：默认你只能看到 `ce_status`、`ce_connect`、`ce_tool_search`。需要其他能力时：
+2. **按需解锁**：默认常驻 `ce_status`、`ce_connect`、`ce_tool_search`、`ce_playbook`、`ce_mission`。需要其他能力时：
    - `ce_tool_search({"query": "scan"})` 搜索可用工具；
-   - `ce_tool_search({"toolNames": ["ce_scan"]})` 解锁精确工具。
+   - `ce_tool_search({"packs": ["scan", "memory"]})` 按任务包解锁一组工具；
+   - `ce_tool_search({"toolNames": ["ce_scan"]})` 精确解锁单个工具。
    - 解锁从**下一请求**开始生效，会话内保持。
 3. **不要用 bash/pwsh 代替 CE 工具**：读写内存、扫描、断点必须走 `ce_*` 工具，不要试图用 shell 或第三方命令绕过。
 

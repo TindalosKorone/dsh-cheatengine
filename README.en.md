@@ -4,7 +4,7 @@
 
 A DeepSeek Harness (DSH) plugin that lets agents drive Cheat Engine for single-player game debugging: find values, find base addresses, lock resources, analyze writers, and more.
 
-> ⚠️ **Token warning**: this plugin registers many `ce_*` tools, which **increases token usage per request**. Only `ce_status`, `ce_connect`, and `ce_tool_search` are exposed by default; unlock tools on demand.
+> ⚠️ **Token warning**: this plugin registers many `ce_*` tools, which **increases token usage per request**. Only `ce_status`, `ce_connect`, `ce_tool_search`, `ce_playbook`, and `ce_mission` are exposed by default; unlock tools on demand.
 
 ## Features
 
@@ -45,7 +45,7 @@ Default bridge endpoint is `127.0.0.1:17171`; override with `ce_connect`.
 ## Usage
 
 1. Run `ce_status` / `ce_connect` to verify the connection.
-2. Use `ce_tool_search` to find and unlock the tools you need.
+2. Use `ce_tool_search` to find and unlock tools by task pack, e.g. `ce_tool_search({"packs": ["scan", "memory"]})`.
 3. For common debugging flows, ask the agent to call `ce_playbook` / `ce_mission`.
 
 See [AGENTS.md](AGENTS.md) for the full tool list and agent-facing conventions.
