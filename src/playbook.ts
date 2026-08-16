@@ -1,0 +1,60 @@
+/**
+ * Built-in skills for dsh-cheatengine.
+ */
+import type { SkillCandidate, SkillProvider } from '@deepseek-ai/dsh-skill'
+
+const PLAYBOOK_SKILL_CANDIDATE: SkillCandidate = {
+  name: 'ce-playbook',
+  description: 'Cheat Engine debugging methodology playbook: find_value, find_base, lock_value, verify_address',
+  invocation: { modelInvocable: true, userInvocable: true },
+  provider: 'dsh-cheatengine',
+  source: 'bundled',
+  resourceBase: { kind: 'opaque', description: 'ce-playbook inline methodology' },
+  rank: 0,
+  locator: new URL('memory://ce-playbook'),
+}
+
+export const cePlaybookProvider: SkillProvider = {
+  name: 'dsh-cheatengine',
+  list: async () => [PLAYBOOK_SKILL_CANDIDATE],
+  get: async () => ({
+    name: 'ce-playbook',
+    description: PLAYBOOK_SKILL_CANDIDATE.description,
+    invocation: PLAYBOOK_SKILL_CANDIDATE.invocation,
+    provider: PLAYBOOK_SKILL_CANDIDATE.provider,
+    source: PLAYBOOK_SKILL_CANDIDATE.source,
+    resourceBase: PLAYBOOK_SKILL_CANDIDATE.resourceBase,
+    content: [
+      '# ce-playbook',
+      '',
+      'Cheat Engine 动态调试方法论（建议而非强制，Agent 可自由组合工具）。',
+      '',
+      '## find_value',
+      '1. ce_scan 初扫当前值；候选过多则尝试 float/double/word/qword。',
+      '2. ce_next_scan 过滤变化；候选为 1 进入验证。',
+      '3. ce_write_integer 写入测试；不生效则 ce_find_what_writes。',
+      '4. 需要稳定地址再做 ce_pointer_scan。',
+      '',
+      '## find_base',
+      '1. 先拿到动态地址（ce_scan/ce_find_what_writes）。',
+      '2. ce_pointer_scan 向上找指针链。',
+      '3. ce_read_pointer_chain 验证链。',
+      '',
+      '## lock_value',
+      '1. ce_read_integer 确认地址。',
+      '2. ce_lock_address 锁定目标值。',
+      '3. ce_read_integer 验证。',
+      '',
+      '## verify_address',
+      '1. ce_read_integer 读取。',
+      '2. ce_write_integer 写入测试。',
+      '3. 没变化则 ce_find_what_writes 找写入者。',
+      '## 返回值与上限',
+      '- ce_scan 只返回 count，具体地址用 ce_get_scan_results。',
+      '- ce_get_scan_results / ce_aob_scan / ce_search_string 返回地址列表，有 limit 上限。',
+      '- ce_read_memory 返回原始字节，size 上限 4096，可分块读取。',
+      '- ce_disassemble count 上限 200。',
+      '- ce_pointer_scan max_results 默认 20。',
+    ].join('\n'),
+  }),
+}

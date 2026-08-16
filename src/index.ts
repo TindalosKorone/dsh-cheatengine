@@ -22,9 +22,11 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { Context } from 'cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { SkillCandidate, SkillDefinition, SkillProvider } from '@deepseek-ai/dsh-skill'
 import z from 'schemastery'
 import { CEClient } from './ce-client.js'
+import { createSessionState, updateSession, pushUndo, pushEvidence, pushHypothesis, pushAudit, pushRecentEvent, type SessionState } from './session.js'
+import { cePlaybookProvider } from './playbook.js'
+import { buildStats, renderStatusHtml } from './web.js'
 
 export const name = '@dsh-external/dsh-cheatengine'
 export const inject = ['tools', 'skills', 'webServer']
@@ -72,133 +74,18 @@ function withErrorClass(result: any, error?: any): any {
   return result
 }
 
-const session = {
-  phase: 'idle',
-  startTime: Date.now(),
-  calls: [] as any[],
-  scanCount: 0,
-  cache: new Map<string, any>(),
-  locks: new Set<string>(),
-  audit: [] as any[],
-  hypotheses: [] as any[],
-  undoStack: [] as any[],
-  summary: '',
-  evidence: [] as any[],
-  recentEvents: [] as any[],
-}
-
+let session = createSessionState()
 let snapshot: any = null
+const sessions = new Map<string, SessionState>()
 
-/** Capacity caps for unbounded session collections (P0 hardening). */
-const MAX_UNDO = 100
-const MAX_EVIDENCE = 200
-const MAX_HYPOTHESES = 100
-const MAX_AUDIT = 200
-
-function pushCapped<T>(arr: T[], item: T, cap: number): void {
-  arr.push(item)
-  if (arr.length > cap) arr.shift()
-}
-
-function pushUndo(item: any): void { pushCapped(session.undoStack, item, MAX_UNDO) }
-function pushEvidence(item: any): void { pushCapped(session.evidence, item, MAX_EVIDENCE) }
-function pushHypothesis(item: any): void { pushCapped(session.hypotheses, item, MAX_HYPOTHESES) }
-function pushAudit(item: any): void { pushCapped(session.audit, item, MAX_AUDIT) }
-
-function pushRecentEvent(text: string): void {
-  session.recentEvents.push({ text, ts: Date.now() })
-  if (session.recentEvents.length > 5) session.recentEvents.shift()
-}
-
-function updateSession(toolName: string, args: any, result: any): void {
-  session.calls.push({
-    tool: toolName,
-    ts: Date.now(),
-    ok: !(result && result.success === false),
-    error_class: result && result.error_class,
-  })
-  if (session.calls.length > 200) session.calls.shift()
-
-  if (toolName === 'ce_scan' && result && result.success !== false) {
-    session.phase = 'scanning'
-    session.scanCount = Number(result.count) || 0
-    session.cache.set(String(args.value), { type: args.type || 'dword', count: session.scanCount, ts: Date.now() })
-  } else if (toolName === 'ce_next_scan' && result && result.success !== false) {
-    session.phase = 'filtering'
-    session.scanCount = Number(result.count) || 0
-  } else if (toolName === 'ce_scan_many' && result && result.success !== false && Array.isArray(result.results) && result.results.length > 0) {
-    const last = result.results[result.results.length - 1]
-    session.phase = 'scanning'
-    session.scanCount = Number(last?.count) || 0
-    const lastValue = Array.isArray(args.values) ? String(args.values[args.values.length - 1]) : ''
-    session.cache.set(lastValue, { type: args.type || 'dword', count: session.scanCount, ts: Date.now() })
-  } else if (toolName === 'ce_find_what_writes' && result && result.success !== false) {
-    session.phase = 'tracing'
-  } else if (toolName === 'ce_pointer_scan' && result && result.success !== false) {
-    session.phase = 'verifying'
-  } else if (toolName === 'ce_lock_address' && result && result.success !== false) {
-    session.phase = 'locked'
-    session.locks.add(String(args.address))
-  } else if (toolName === 'ce_unlock_address' && result && result.success !== false) {
-    session.locks.delete(String(args.address))
+function getSession(exec: any): SessionState {
+  const id = exec?.agent?.session?.id || 'default'
+  let s = sessions.get(id)
+  if (!s) {
+    s = createSessionState()
+    sessions.set(id, s)
   }
-
-  // L0: automatic one-line summary + capped recent events
-  const ok = !(result && result.success === false)
-  if (!ok) {
-    session.summary = `最近操作失败：${String(result?.error || 'unknown')}`
-    pushRecentEvent(`失败 ${toolName}: ${String(result?.error || 'unknown')}`)
-    return
-  }
-
-  let summary = ''
-  let event = ''
-  if (toolName === 'ce_scan') {
-    summary = `候选 ${result.count}`
-    event = `扫描 ${args.value} → ${result.count} 候选`
-  } else if (toolName === 'ce_next_scan') {
-    summary = `候选 ${result.count}`
-    event = `过滤 ${args.value} → ${result.count} 候选`
-  } else if (toolName === 'ce_scan_many') {
-    const last = Array.isArray(result.results) ? result.results[result.results.length - 1] : null
-    summary = `候选 ${last?.count ?? 0}`
-    event = `批量扫描完成，最后候选 ${last?.count ?? 0}`
-  } else if (toolName === 'ce_get_scan_results') {
-    summary = `候选 ${result.total ?? result.returned ?? 0}`
-    event = `读取扫描结果 ${result.returned ?? 0} 条`
-  } else if (toolName === 'ce_write_integer') {
-    summary = `已写入 ${args.address} = ${args.value}`
-    event = `写入 ${args.address} = ${args.value}`
-  } else if (toolName === 'ce_memory_write') {
-    const mode = args.mode || 'integer'
-    const target = mode === 'many' ? `${Array.isArray(args.addresses) ? args.addresses.length : 0} 个地址` : String(args.address || '')
-    summary = `已写入 ${target}`
-    event = `内存写入 ${target}（${mode}）`
-  } else if (toolName === 'ce_lock_address') {
-    summary = `已锁定 ${args.address}`
-    event = `锁定 ${args.address} = ${args.value}`
-  } else if (toolName === 'ce_unlock_address') {
-    summary = `已解锁 ${args.address}`
-    event = `解锁 ${args.address}`
-  } else if (toolName === 'ce_find_what_writes') {
-    const hit = result?.hit
-    summary = `找到写入者 ${hit?.instruction || hit?.registers?.RIP || ''}`
-    event = `找写入者 ${args.address}`
-  } else if (toolName === 'ce_pointer_scan') {
-    summary = `指针扫描 ${result.count} 条链`
-    event = `指针扫描 ${args.address} → ${result.count} 条链`
-  } else if (toolName === 'ce_detect_protection') {
-    summary = `保护检测：${result.risk}`
-    event = `保护检测 → ${result.risk}`
-  } else if (toolName === 'ce_attach') {
-    summary = `已附加 ${args.process_id_or_name}`
-    event = `附加 ${args.process_id_or_name}`
-  } else if (toolName === 'ce_connect') {
-    summary = '已连接 CE 桥接'
-    event = '连接 CE 桥接'
-  }
-  if (summary) session.summary = summary
-  if (event) pushRecentEvent(event)
+  return s
 }
 /** Always-visible tools: connection status + on-demand discovery + guide. */
 const RESIDENT_TOOLS = new Set(['ce_status', 'ce_connect', 'ce_tool_search', 'ce_playbook', 'ce_mission'])
@@ -443,7 +330,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
         const res = await client.sendCommand('write_integer', { address, value: Number(args.value), type })
         if (res && res.success !== false) {
-          pushUndo({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
+          pushUndo(session, { kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
         }
         return res
       },
@@ -465,7 +352,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const before = readRes && readRes.success !== false && Array.isArray(readRes.bytes) ? readRes.bytes : null
         const res = await client.sendCommand('write_memory', { address, bytes })
         if (res && res.success !== false) {
-          pushUndo({ kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
+          pushUndo(session, { kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
         }
         return res
       },
@@ -490,7 +377,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         const before = readRes && readRes.success !== false ? readRes.value : null
         const res = await client.sendCommand('write_string', { address, value, wide })
         if (res && res.success !== false) {
-          pushUndo({ kind: 'write_string', address, before, after: value, wide, ts: Date.now() })
+          pushUndo(session, { kind: 'write_string', address, before, after: value, wide, ts: Date.now() })
         }
         return res
       },
@@ -750,7 +637,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
         if (String(res.result || '').trim() !== 'locked') {
           return { success: false, error: `lock failed: ${String(res.result || res.error || 'unknown')}`, error_class: 'LOCK_FAILED' }
         }
-        pushUndo({ kind: 'lock', address, value, type, ts: Date.now() })
+        pushUndo(session, { kind: 'lock', address, value, type, ts: Date.now() })
         return { success: true, address, value, type, interval_ms: interval, lua_result: res }
       },
     },
@@ -1054,7 +941,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const res = await client.sendCommand('write_integer', { address: addresses[i], value: values[i], type })
           results.push({ address: addresses[i], value: values[i], success: !!(res && res.success !== false) })
           if (res && res.success !== false) {
-            pushUndo({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
+            pushUndo(session, { kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
           }
         }
         return { success: true, type, results, truncated }
@@ -1148,7 +1035,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const statement = String(args.statement || '').trim()
           if (!statement) return { success: false, error: 'statement is required for add', error_class: 'INVALID_ARGS' }
           const id = args.id || `H${session.hypotheses.length + 1}`
-          pushHypothesis({ id, statement, result: args.result || null, ts: Date.now() })
+          pushHypothesis(session, { id, statement, result: args.result || null, ts: Date.now() })
           return { success: true, id, count: session.hypotheses.length }
         }
         const id = args.id ? String(args.id) : null
@@ -1301,7 +1188,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
             tags: Array.isArray(args.tags) ? args.tags : [],
             ts: Date.now(),
           }
-          pushEvidence(entry)
+          pushEvidence(session, entry)
           return { success: true, id: entry.id, count: session.evidence.length }
         }
         return { success: true, count: session.evidence.length, entries: session.evidence.slice(-50).reverse() }
@@ -1669,7 +1556,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const beforeRes = await client.sendCommand('read_integer', { address, type })
           const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
           const res = await client.sendCommand('write_integer', { address, value: Number(args.value), type })
-          if (res && res.success !== false) pushUndo({ kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
+          if (res && res.success !== false) pushUndo(session, { kind: 'write', address, type, before, after: Number(args.value), ts: Date.now() })
           return res
         }
         if (mode === 'memory') {
@@ -1679,7 +1566,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const readRes = await client.sendCommand('read_memory', { address, size: bytes.length })
           const before = readRes && readRes.success !== false && Array.isArray(readRes.bytes) ? readRes.bytes : null
           const res = await client.sendCommand('write_memory', { address, bytes })
-          if (res && res.success !== false) pushUndo({ kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
+          if (res && res.success !== false) pushUndo(session, { kind: 'write_memory', address, before, after: bytes, ts: Date.now() })
           return res
         }
         if (mode === 'string') {
@@ -1691,7 +1578,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
           const readRes = await client.sendCommand('read_string', { address, max_length: maxLen, encoding: wide ? 'utf16le' : 'utf8' })
           const before = readRes && readRes.success !== false ? readRes.value : null
           const res = await client.sendCommand('write_string', { address, value: text, wide })
-          if (res && res.success !== false) pushUndo({ kind: 'write_string', address, before, after: text, wide, ts: Date.now() })
+          if (res && res.success !== false) pushUndo(session, { kind: 'write_string', address, before, after: text, wide, ts: Date.now() })
           return res
         }
         if (mode === 'many') {
@@ -1710,7 +1597,7 @@ export function createToolDefs(client: CEClient): ToolDef[] {
             const before = beforeRes && beforeRes.success !== false ? beforeRes.value : null
             const res = await client.sendCommand('write_integer', { address: addresses[i], value: values[i], type })
             results.push({ address: addresses[i], value: values[i], success: !!(res && res.success !== false) })
-            if (res && res.success !== false) pushUndo({ kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
+            if (res && res.success !== false) pushUndo(session, { kind: 'write', address: addresses[i], type, before, after: values[i], ts: Date.now() })
           }
           return { success: true, type, results, truncated }
         }
@@ -1851,7 +1738,7 @@ function recordAutoEvidence(toolName: string, args: any, result: any): void {
   if (entry) {
     entry.id = `E${session.evidence.length + 1}`
     entry.ts = Date.now()
-    pushEvidence(entry)
+    pushEvidence(session, entry)
     if (session.evidence.length > 200) session.evidence.shift()
   }
 }
@@ -1945,22 +1832,25 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
         { type: 'text', text: JSON.stringify(value, null, 2) },
       ],
     },
-    async execute(args: any) {
+    async execute(args: any, exec: any) {
+      const s = getSession(exec)
+      const prev = session
+      session = s
       try {
         if (def.execute) {
           const res = withErrorClass(await def.execute(args, client))
-          updateSession(def.name, args, res)
+          updateSession(session, def.name, args, res)
           recordAutoEvidence(def.name, args, res)
-          if (def.dangerous && res && res.success !== false) pushAudit({ tool: def.name, args, ts: Date.now() })
+          if (def.dangerous && res && res.success !== false) pushAudit(session, { tool: def.name, args, ts: Date.now() })
           return res
         }
         const params = def.mapParams ? def.mapParams(args) : args
         const raw = await client.sendCommand(def.method, params)
         const mapped = def.mapResult ? def.mapResult(raw, args) : raw
         const wrapped = withErrorClass(mapped)
-        updateSession(def.name, args, wrapped)
+        updateSession(session, def.name, args, wrapped)
         recordAutoEvidence(def.name, args, wrapped)
-        if (def.dangerous && wrapped && wrapped.success !== false) pushAudit({ tool: def.name, args, ts: Date.now() })
+        if (def.dangerous && wrapped && wrapped.success !== false) pushAudit(session, { tool: def.name, args, ts: Date.now() })
         return wrapped
       } catch (err: any) {
         return {
@@ -1968,6 +1858,8 @@ function buildTool(ctx: Context, client: CEClient, def: ToolDef) {
           error: String((err && err.message) || err),
           error_class: classifyError(err),
         }
+      } finally {
+        session = prev
       }
     },
   })
@@ -2012,166 +1904,6 @@ function unlockedFromEvents(session: any): Set<string> {
   return unlocked
 }
 
-const PLAYBOOK_SKILL_CANDIDATE: SkillCandidate = {
-  name: 'ce-playbook',
-  description: 'Cheat Engine debugging methodology playbook: find_value, find_base, lock_value, verify_address',
-  invocation: { modelInvocable: true, userInvocable: true },
-  provider: 'dsh-cheatengine',
-  source: 'bundled',
-  resourceBase: { kind: 'opaque', description: 'ce-playbook inline methodology' },
-  rank: 0,
-  locator: new URL('memory://ce-playbook'),
-}
-
-const cePlaybookProvider: SkillProvider = {
-  name: 'dsh-cheatengine',
-  list: async () => [PLAYBOOK_SKILL_CANDIDATE],
-  get: async () => ({
-    name: 'ce-playbook',
-    description: PLAYBOOK_SKILL_CANDIDATE.description,
-    invocation: PLAYBOOK_SKILL_CANDIDATE.invocation,
-    provider: PLAYBOOK_SKILL_CANDIDATE.provider,
-    source: PLAYBOOK_SKILL_CANDIDATE.source,
-    resourceBase: PLAYBOOK_SKILL_CANDIDATE.resourceBase,
-    content: [
-      '# ce-playbook',
-      '',
-      'Cheat Engine 动态调试方法论（建议而非强制，Agent 可自由组合工具）。',
-      '',
-      '## find_value',
-      '1. ce_scan 初扫当前值；候选过多则尝试 float/double/word/qword。',
-      '2. ce_next_scan 过滤变化；候选为 1 进入验证。',
-      '3. ce_write_integer 写入测试；不生效则 ce_find_what_writes。',
-      '4. 需要稳定地址再做 ce_pointer_scan。',
-      '',
-      '## find_base',
-      '1. 先拿到动态地址（ce_scan/ce_find_what_writes）。',
-      '2. ce_pointer_scan 向上找指针链。',
-      '3. ce_read_pointer_chain 验证链。',
-      '',
-      '## lock_value',
-      '1. ce_read_integer 确认地址。',
-      '2. ce_lock_address 锁定目标值。',
-      '3. ce_read_integer 验证。',
-      '',
-      '## verify_address',
-      '1. ce_read_integer 读取。',
-      '2. ce_write_integer 写入测试。',
-      '3. 没变化则 ce_find_what_writes 找写入者。',
-      '## 返回值与上限',
-      '- ce_scan 只返回 count，具体地址用 ce_get_scan_results。',
-      '- ce_get_scan_results / ce_aob_scan / ce_search_string 返回地址列表，有 limit 上限。',
-      '- ce_read_memory 返回原始字节，size 上限 4096，可分块读取。',
-      '- ce_disassemble count 上限 200。',
-      '- ce_pointer_scan max_results 默认 20。',
-    ].join('\n'),
-  }),
-}
-function buildStats(): any {
-  return {
-    phase: session.phase,
-    call_count: session.calls.length,
-    scan_count: session.scanCount,
-    locked_addresses: Array.from(session.locks),
-    cache_size: session.cache.size,
-    evidence_count: session.evidence.length,
-    hypothesis_count: session.hypotheses.length,
-    audit_count: session.audit.length,
-    summary: session.summary,
-    elapsed_seconds: Math.round((Date.now() - session.startTime) / 1000),
-    recent_calls: session.calls.slice(-10).reverse().map((c: any) => ({ tool: c.tool, ok: c.ok })),
-    recent_events: session.recentEvents.slice(-5).reverse(),
-  }
-}
-
-function renderStatusHtml(): string {
-  const s = buildStats()
-  const lockList = s.locked_addresses.map((a: string) => `<li><code>${a}</code></li>`).join('') || '<li>none</li>'
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<title>DSH Cheat Engine Status</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:2rem;max-width:720px}
-h1{font-size:1.4rem}
-.card{background:#1c1c1c;border:1px solid #333;border-radius:10px;padding:1rem;margin:1rem 0}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.k{color:#999;font-size:.8rem;text-transform:uppercase}
-.v{font-size:1.1rem;font-weight:600}
-ul{padding-left:1.2rem}
-li{margin:.2rem 0}
-</style>
-</head>
-<body>
-<h1>🧊 DSH Cheat Engine Status</h1>
-<div class="card"><div class="grid">
-<div><div class="k">Phase</div><div class="v">${s.phase}</div></div>
-<div><div class="k">Calls</div><div class="v">${s.call_count}</div></div>
-<div><div class="k">Scan count</div><div class="v">${s.scan_count}</div></div>
-<div><div class="k">Elapsed</div><div class="v">${s.elapsed_seconds}s</div></div>
-<div><div class="k">Evidence</div><div class="v">${s.evidence_count}</div></div>
-<div><div class="k">Hypotheses</div><div class="v">${s.hypothesis_count}</div></div>
-</div></div>
-<div class="card"><h2>Locked</h2><ul>${lockList}</ul></div>
-<div class="card"><h2>Recent calls</h2><ul>${s.recent_calls.map((c: any) => `<li>${c.ok ? '✅' : '❌'} ${c.tool}</li>`).join('') || '<li>none</li>'}</ul></div>
-<script>setTimeout(()=>location.reload(), 2000)</script>
-</body>
-</html>`
-}
-function panelScript(): string {
-  return `(function(){
-  var PANEL_ID='dsh-ce-status-panel';
-  var STYLE_ID='dsh-ce-status-panel-style';
-  function ensureStyle(){
-    if(document.getElementById(STYLE_ID)) return;
-    var s=document.createElement('style');
-    s.id=STYLE_ID;
-    s.textContent='#dsh-ce-status-panel{position:fixed;right:16px;bottom:16px;z-index:99999;width:260px;background:var(--dsw-alias-bg-layer-3, #1c1c1c);color:var(--dsw-alias-label-primary, #eee);border:1px solid var(--dsw-alias-border-l2, #333);border-radius:12px;padding:12px 14px;font:12px/1.5 var(--ds-font-family-ui, system-ui);box-shadow:var(--dsw-shadow-lv1, 0 8px 30px rgba(0,0,0,.4));backdrop-filter:blur(6px)}' +
-      '#dsh-ce-status-panel h3{margin:0 0 8px;font-size:13px;color:var(--dsw-alias-label-primary, #eee)}' +
-      '#dsh-ce-status-panel .row{display:flex;justify-content:space-between;padding:2px 0;color:var(--dsw-alias-label-secondary, #ccc)}' +
-      '#dsh-ce-status-panel .sum{margin-top:6px;color:var(--dsw-alias-label-tertiary, #999);white-space:pre-wrap}' +
-      '#dsh-ce-status-panel .close{position:absolute;top:6px;right:10px;cursor:pointer;color:var(--dsw-alias-label-tertiary, #999)}';
-    document.head.appendChild(s);
-  }
-  function ensurePanel(){
-    var el=document.getElementById(PANEL_ID);
-    if(el) return el;
-    ensureStyle();
-    el=document.createElement('div');
-    el.id=PANEL_ID;
-    el.innerHTML='<span class="close" onclick="this.parentNode.remove()">×</span>' +
-      '<h3>🧊 CE Status</h3>' +
-      '<div class="row"><span>Phase</span><b data-field="phase">-</b></div>' +
-      '<div class="row"><span>Calls</span><b data-field="calls">-</b></div>' +
-      '<div class="row"><span>Scan</span><b data-field="scan">-</b></div>' +
-      '<div class="row"><span>Locks</span><b data-field="locks">-</b></div>' +
-      '<div class="sum" data-field="summary"></div>';
-    document.body.appendChild(el);
-    return el;
-  }
-  function render(d){
-    var el=ensurePanel();
-    el.querySelector('[data-field=phase]').textContent=d.phase||'-';
-    el.querySelector('[data-field=calls]').textContent=d.call_count;
-    el.querySelector('[data-field=scan]').textContent=d.scan_count;
-    el.querySelector('[data-field=locks]').textContent=d.locked_addresses?d.locked_addresses.length:0;
-    el.querySelector('[data-field=summary]').textContent=d.summary||'';
-  }
-  function tick(){
-    fetch('/ce-status/api').then(function(r){return r.json()}).then(render).catch(function(){});
-  }
-  if(window.MutationObserver){
-    new MutationObserver(function(){ if(!document.getElementById(PANEL_ID)) ensurePanel(); }).observe(document.body,{childList:true});
-  }
-  tick(); setInterval(tick,2000);
-})();`
-}
-
-function injectStatusPanel(html: string): string {
-  if (html.includes('/ce-status-panel.js')) return html
-  return html.replace('</body>', '<script src="/ce-status-panel.js"></script></body>')
-}
 export function apply(ctx: Context, config: Config): void {
   const cfg = { ...DEFAULTS, ...(config || {}) }
   const client = new CEClient({
@@ -2189,8 +1921,8 @@ export function apply(ctx: Context, config: Config): void {
     const webServer = (ctx as any).webServer
     if (webServer && typeof webServer.register === 'function') {
       try {
-        webDisposers.push(webServer.register({ kind: 'exact', path: '/ce-status', handler: async (_req: any, res: any) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(renderStatusHtml()) } }))
-        webDisposers.push(webServer.register({ kind: 'exact', path: '/ce-status/api', handler: async (_req: any, res: any) => { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(buildStats())) } }))
+        webDisposers.push(webServer.register({ kind: 'exact', path: '/ce-status', handler: async (_req: any, res: any) => { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(renderStatusHtml(session)) } }))
+        webDisposers.push(webServer.register({ kind: 'exact', path: '/ce-status/api', handler: async (_req: any, res: any) => { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(buildStats(session))) } }))
       } catch (err: any) {
         try { ctx.logger.warn(`dsh-cheatengine: failed to register /ce-status routes: ${String((err && err.message) || err)}`) } catch { /* ignore */ }
       }
